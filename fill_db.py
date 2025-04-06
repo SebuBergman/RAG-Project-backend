@@ -1,53 +1,45 @@
 from langchain_community.document_loaders import PyPDFDirectoryLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-import chromadb
+from pymongo import MongoClient
+from bson.objectid import ObjectId
 
 # setting the environment
-
 DATA_PATH = r"data"
-CHROMA_PATH = r"chroma_db"
+MONGO_URI = "mongodb://localhost:27017/"
+DATABASE_NAME = "RAG"
+COLLECTION_NAME = "documents"
 
-chroma_client = chromadb.PersistentClient(path=CHROMA_PATH)
-
-collection = chroma_client.get_or_create_collection(name="rag_database")
+client = MongoClient(MONGO_URI)
+db = client[DATABASE_NAME]
+collection = db[COLLECTION_NAME]
 
 # loading the document
-
 loader = PyPDFDirectoryLoader(DATA_PATH)
-
 raw_documents = loader.load()
 
 # splitting the document
-
 text_splitter = RecursiveCharacterTextSplitter(
     chunk_size=300,
     chunk_overlap=100,
     length_function=len,
     is_separator_regex=False,
 )
-
 chunks = text_splitter.split_documents(raw_documents)
 
-# preparing to be added in chromadb
-
+# preparing to be added into mongodb
 documents = []
 metadata = []
 ids = []
 
 i = 0
 
-for chunk in chunks:
-    documents.append(chunk.page_content)
-    ids.append("ID"+str(i))
-    metadata.append(chunk.metadata)
+for i, chunk in enumerate(chunks):
+    document = {
+        "_id": ObjectId(), # unique id for the document
+        "content": chunk.page_content, # content of the document
+        "metadata": chunk.metadata, # metadata of the document
+    }
+    documents.append(document)
 
-    i += 1
-
-# adding to chromadb
-
-
-collection.upsert(
-    documents=documents,
-    metadatas=metadata,
-    ids=ids
-)
+# adding to mongodb
+collection.insert_many(documents)
