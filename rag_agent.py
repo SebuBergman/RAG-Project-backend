@@ -1,3 +1,5 @@
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 import os
 import requests
 import numpy as np
@@ -5,11 +7,13 @@ from pymongo import MongoClient
 from openai import OpenAI
 from dotenv import load_dotenv
 from sklearn.metrics.pairwise import cosine_similarity
-from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 # pylint:disable=relative-beyond-top-level
 
 load_dotenv()
+
+# FastAPI app initialization
+app = FastAPI()
 
 # Setting the environment
 # MongoDB configuration
@@ -23,8 +27,10 @@ client = MongoClient(MONGO_URI)
 db = client[DATABASE_NAME]
 collection = db[COLLECTION_NAME]
 
-app = FastAPI()
+# OpenAI client initialization
+openai_client = OpenAI()
 
+# CORS configuration
 origins = [
     "*",
 ]
@@ -37,25 +43,33 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Model for query input
+class QueryRequest(BaseModel):
+    question: str
+
+# Helper function to query Hugging Face API
+def query_hf_api(payload):
+    headers = {"Authorization": f"Bearer {HF_TOKEN}"}
+    response = requests.post(HF_API_URL, headers=headers, json=payload, timeout=360)
+    if response.status_code != 200:
+        raise HTTPException(status_code=response.status_code, detail="Error querying Hugging Face API")
+    return response.json()
+
 PREFIX = "/api"
 
-@app.post(f"{PREFIX}/query")
-async def generate_response(query: str):
-    def query_hf_api(payload):
-        headers = {"Authorization": f"Bearer {HF_TOKEN}"}
-        response = requests.post(HF_API_URL, headers=headers, json=payload, timeout=360)
-        return response.json()
+# Root endpoint
+@app.get("/")
+def read_root():
+    return {"message": "Welcome to the RAG Assistant API. Use the /query endpoint to interact."}
 
-    # Getting the user query
-    user_query = input("What do you want to know about designing web API's?\n\n")
+@app.post("/query")
+async def query(request: QueryRequest):
+    user_query = request.question
 
-    # Generate the embedding for the user query using the Hugging Face API
+    # Generate the embedding for the user query using Hugging Face API
     payload = {"inputs": [user_query]}
     response = query_hf_api(payload)
-    query_embedding = response
-
-    # Convert query embedding to numpy array and ensure it is 2D
-    query_embedding = np.array(query_embedding).reshape(1, -1)
+    query_embedding = np.array(response).reshape(1, -1)
 
     # Retrieve all embeddings from MongoDB
     cursor = collection.find({})
@@ -69,22 +83,14 @@ async def generate_response(query: str):
             embeddings.extend(doc['embeddings'])
         metadata.append(doc.get('metadata', {}))
 
-    # Debugging: Check the number of documents and embeddings
-    print(f"Number of documents: {len(documents)}")
-    print(f"Number of embeddings: {len(embeddings)}")
+    # Check if there are embeddings in the database
+    if not embeddings:
+        raise HTTPException(status_code=404, detail="No embeddings found in the database.")
 
-    # Convert embeddings to numpy array and ensure it is 2D
+    # Convert embeddings to NumPy array and ensure it is 2D
     embeddings = np.array(embeddings)
     if embeddings.ndim == 1:
         embeddings = embeddings.reshape(1, -1)
-
-    # Debugging: Check the shape of the embeddings array
-    print(f"Shape of embeddings array: {embeddings.shape}")
-
-    # Check if embeddings array is empty
-    if embeddings.size == 0:
-        print("No embeddings found in the database.")
-        exit()
 
     # Calculate cosine similarity between query embedding and document embeddings
     similarities = cosine_similarity(query_embedding, embeddings).flatten()
@@ -102,31 +108,29 @@ async def generate_response(query: str):
     If you don't know the answer, just say: I don't know
     --------------------
     The data:
-    """ + "\n".join(["".join(doc) for doc in top_documents]) + """
+    """ + "<br>".join(["".join(doc) for doc in top_documents]) + """
     --------------------
     The question:
     """ + user_query + """
     """
 
-    # Printing the results for debugging
-    print(system_prompt)
+    # Get the response from OpenAI
+    try:
+        openai_response = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_query}
+            ]
+        )
+        answer = openai_response.choices[0].message.content
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error querying OpenAI: {str(e)}")
 
-    # Getting response from OpenAI
-    client = OpenAI()
-
-    openai_response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_query}
-        ]
-    )
-
-    answer = openai_response.choices[0].message.content
-
+    # Return the response
     return {
         "answer": answer,
         "top_documents": top_documents,
         "file_name": "Designingwebapis.pdf",
-        "metadata": top_metadata,
+        "metadata": top_metadata
     }
