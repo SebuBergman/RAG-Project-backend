@@ -1,2 +1,4 @@
 Why do i need a api?
 How hard is it to develop an api?
+How should i design a landing page?
+How do i create basic authentication?
