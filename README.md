@@ -1,10 +1,33 @@
-# RAG-Project-backend
+🧠 RAG Agent Backend
+This is the backend component of a Retrieval-Augmented Generation (RAG) system designed to provide intelligent, context-aware answers based on PDF documents. Built with Python and FastAPI, this service handles embedding, retrieval, and interaction with OpenAI’s language models.
 
-Developed a Python-based RAG agent using FastAPI, designed to process PDF documents by splitting them into individual sentences. These sentences are then embedded using a Hugging Face model (BAAI/bge-small-en-v1.5) to enable semantic search and context-aware retrieval.
+🔍 What It Does
+Parses and splits PDF files into individual sentences.
 
-The system takes user input, performs a similarity search over the embedded sentence database (stored in MongoDB), and retrieves the most relevant information. This data is then sent to an OpenAI model, which generates a response tailored to both the user's query and the retrieved context.
+Generates sentence embeddings using Hugging Face's BAAI/bge-small-en-v1.5 model.
 
-Additionally, I built a separate front-end interface allowing users to interact seamlessly with the system. User questions submitted via the front-end are routed through the API to the backend RAG agent, ensuring fast and contextually accurate responses from the OpenAI model.
+Stores and indexes embeddings in a MongoDB database for fast semantic search.
 
-Here is the Front-end for this project
-<a href="https://github.com/SebuBergman/RAG-Project-frontend">https://github.com/SebuBergman/RAG-Project-frontend</a>
+Accepts user queries via API, retrieves the most relevant content based on similarity, and sends it along with the query to OpenAI for final answer generation.
+
+Returns the response to the front-end through a RESTful API.
+
+⚙️ Tech Stack
+Language: Python
+
+Framework: FastAPI
+
+Embeddings: HuggingFace Transformers (BAAI/bge-small-en-v1.5)
+
+Database: MongoDB (used for storing and searching vector embeddings)
+
+AI Integration: OpenAI API for final response generation
+
+PDF Handling: Llama_index / pypdf
+
+📡 API Overview
+POST /query: Accepts a user question, performs semantic retrieval + OpenAI call, and returns an answer.
+
+*Not implemented* POST /upload: Allows uploading and processing of new PDF documents (optional route depending on your setup).
+
+Structured and ready for integration with any front-end via HTTP requests.
