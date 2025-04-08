@@ -1,7 +1,8 @@
-openai
-python-dotenv
-langchain_community
-langchain_text_splitters
 pypdf
-pymongo
 langchain
+PyPDF2
+requests
+python-dotenv
+pymongo
+openai
+llama_index
