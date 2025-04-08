@@ -32,4 +32,4 @@ POST /query: Accepts a user question, performs semantic retrieval + OpenAI call,
 
 Structured and ready for integration with any front-end via HTTP requests.
 
-<a href="https://github.com/SebuBergman/RAG-Project-frontend">RAG Front-end github</a>
+<a href="https://github.com/SebuBergman/RAG-Project-frontend">RAG front-end github</a>
