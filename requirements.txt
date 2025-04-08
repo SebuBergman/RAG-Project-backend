@@ -6,3 +6,6 @@ python-dotenv
 pymongo
 openai
 llama_index
+fastapi
+uvicorn
+pydantic
