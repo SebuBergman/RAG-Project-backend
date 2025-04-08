@@ -2,6 +2,7 @@
 
 This is the backend component of a Retrieval-Augmented Generation (RAG) system designed to provide intelligent, context-aware answers based on PDF documents. Built with Python and FastAPI, this service handles embedding, retrieval, and interaction with OpenAI’s language models.
 
+
 🔍 What It Does
 
 Parses and splits PDF files into individual sentences.
@@ -13,6 +14,7 @@ Stores and indexes embeddings in a MongoDB database for fast semantic search.
 Accepts user queries via API, retrieves the most relevant content based on similarity, and sends it along with the query to OpenAI for final answer generation.
 
 Returns the response to the front-end through a RESTful API.
+
 
 ⚙️ Tech Stack
 Language: Python
@@ -26,6 +28,7 @@ Database: MongoDB (used for storing and searching vector embeddings)
 AI Integration: OpenAI API for final response generation
 
 PDF Handling: Llama_index / pypdf
+
 
 📡 API Overview
 
