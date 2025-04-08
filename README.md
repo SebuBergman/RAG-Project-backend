@@ -31,3 +31,5 @@ POST /query: Accepts a user question, performs semantic retrieval + OpenAI call,
 *Not implemented* POST /upload: Allows uploading and processing of new PDF documents (optional route depending on your setup).
 
 Structured and ready for integration with any front-end via HTTP requests.
+
+<a href="https://github.com/SebuBergman/RAG-Project-frontend">RAG Front-end github</a>
