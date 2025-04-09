@@ -24,3 +24,5 @@ dist-ssr
 .env
 chroma_db
 rag_project
+data
+embeddings

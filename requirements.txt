@@ -9,3 +9,4 @@ llama_index
 fastapi
 uvicorn
 pydantic
+python-multipart
