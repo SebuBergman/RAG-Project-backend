@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 from sklearn.metrics.pairwise import cosine_similarity
 from fastapi.middleware.cors import CORSMiddleware
 # pylint:disable=relative-beyond-top-level
-from create_embeddings import process_pdf
+from create_embeddings import process_pdf, upload_to_s3
 from mongo_db import get_all_embeddings, insert_pdf_metadata, get_pdf_metadata
 
 load_dotenv()
@@ -57,17 +57,25 @@ async def upload_pdf(file: UploadFile = File(...)):
         with open(file_path, "wb") as f:
             f.write(await file.read())
 
+        # Upload the file to S3 and process it
+        bucket_name = os.getenv("S3_BUCKET_NAME")
+        s3_key = f"pdfs/{file.filename}"
+        s3_url = upload_to_s3(file_path, bucket_name, s3_key)
+
         # Process the uploaded PDF
         process_pdf(file_path)
 
-        # Normalize file path to use forward slashes
-        normalized_path = posixpath.normpath(file_path.replace("\\", "/"))
-        pdf_metadata = {"file_name": file.filename, "file_path": normalized_path}
-
-        # Store metadata of the uploaded PDF in MongoDB collection
+        # Save metadata with S3 URL
+        pdf_metadata = {
+            "file_name": file.filename,
+            "file_path": s3_url,
+        }
         insert_pdf_metadata(pdf_metadata)
 
-        return {"message": f"File {file.filename} uploaded and processed successfully."}
+        # Clean up the local file
+        os.remove(file_path)
+
+        return {"message": f"File {file.filename} uploaded and processed successfully.", "s3_url": s3_url}
 
     except Exception as e:
         print(f"Error in /upload endpoint: {e}")
@@ -123,7 +131,7 @@ async def query(request: QueryRequest):
     similarities = cosine_similarity(query_embedding, embeddings).flatten()
 
     # Get top 3 most similar documents (handle cases with fewer than 3 documents)
-    top_indices = similarities.argsort()[-3:][::-1]
+    top_indices = similarities.argsort()[-4:][::-1]
     top_documents = [documents[i] for i in top_indices]
 
     # Preparing data for OpenAI
