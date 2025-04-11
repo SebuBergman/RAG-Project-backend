@@ -34,7 +34,9 @@ PDF Handling: Llama_index / pypdf
 
 POST /query: Accepts a user question, performs semantic retrieval + OpenAI call, and returns an answer.
 
-*Not implemented* POST /upload: Allows uploading and processing of new PDF documents (optional route depending on your setup).
+POST /upload: Allows uploading and processing of new PDF documents (optional route depending on your setup).
+
+GET /pdfs: Get's a list of uploaded and embeded pdfs
 
 Structured and ready for integration with any front-end via HTTP requests.
 
