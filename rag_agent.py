@@ -10,7 +10,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 from fastapi.middleware.cors import CORSMiddleware
 # pylint:disable=relative-beyond-top-level
 from create_embeddings import process_pdf, upload_to_s3
-from mongo_db import get_all_embeddings, insert_pdf_metadata, get_pdf_metadata
+from mongo_db import get_all_embeddings, insert_pdf_metadata, get_pdf_metadata, keyword_search, hybrid_search
 
 load_dotenv()
 
@@ -42,6 +42,8 @@ stored_pdfs = []
 # Model for query input
 class QueryRequest(BaseModel):
     question: str
+    keyword: str
+    file_name: str
 
 # Root endpoint
 @app.get("/")
@@ -65,7 +67,7 @@ async def upload_pdf(file: UploadFile = File(...)):
         # Process the uploaded PDF
         process_pdf(file_path)
 
-        # Save metadata with S3 URL
+        # Save metadata with S3
         pdf_metadata = {
             "file_name": file.filename,
             "file_path": s3_url,
@@ -87,18 +89,16 @@ def get_pdfs():
     try:
         pdfs = get_pdf_metadata()
 
-        # Normalize file paths to use forward slashes
-        for pdf in pdfs:
-            pdf["file_path"] = posixpath.normpath(pdf["file_path"].replace("\\", "/"))
-
         return {"pdfs": pdfs}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error retrieving PDFs: {str(e)}")
 
 @app.post("/query")
 async def query(request: QueryRequest):
-    """Answer a question using the RAG model based on embeddings."""
+    """Answer a question using both vector and keyword search."""
     user_query = request.question
+    user_keyword = request.keyword
+    file_name = request.file_name
 
     # Generate the embedding for the user query using Hugging Face API
     payload = {"inputs": [user_query]}
@@ -123,16 +123,54 @@ async def query(request: QueryRequest):
     # Check if there are embeddings in the database
     if not embeddings:
         raise HTTPException(status_code=404, detail="No embeddings found in the database.")
+    
+    # Debug: Log lengths of retrieved data
+    print(f"Number of Embeddings: {len(embeddings)}")
+    print(f"Number of Metadata: {len(metadata)}")
+    print(f"Number of Documents: {len(documents)}")
 
     # Convert embeddings to NumPy array
     embeddings = np.array(embeddings)
 
+    # Debug: Log embedding shape
+    print(f"Document Embedding Shape: {embeddings.shape}")
+
     # Calculate cosine similarity between query embedding and document embeddings
     similarities = cosine_similarity(query_embedding, embeddings).flatten()
 
-    # Get top 3 most similar documents (handle cases with fewer than 3 documents)
-    top_indices = similarities.argsort()[-4:][::-1]
-    top_documents = [documents[i] for i in top_indices]
+    # Debug: Log similarity scores
+    print(f"Similarity Scores: {similarities}")
+
+    # Get top 5 most similar documents
+    top_indices = similarities.argsort()[-5:][::-1]
+    vector_results = [
+        {
+            "file_name": file_name,
+            "sentences": documents[i],
+            "score": similarities[i],
+        }
+        for i in top_indices
+    ]
+
+    # Debug: Log vector results
+    print(f"Vector Results: {vector_results}")
+
+    # Perform keyword search
+    keyword_results = keyword_search(user_keyword, limit=5)
+
+    # Debug: Log keyword results
+    print(f"Keyword Results: {keyword_results}")
+
+    # Combine vector and keyword search results
+    hybrid_results = hybrid_search(vector_results, keyword_results, limit=5)
+
+    # Debug: Log hybrid results
+    print(f"Hybrid Results: {hybrid_results}")
+
+    # Prepare response
+    top_documents = [result for result in hybrid_results]
+
+    print(f"Top documents: {top_documents}")
 
     # Preparing data for OpenAI
     system_prompt = """
@@ -142,7 +180,7 @@ async def query(request: QueryRequest):
     If you don't know the answer, just say: I don't know
     --------------------
     The data:
-    """ + "<br>".join(["".join(doc) for doc in top_documents]) + """
+    """ + "<br>".join(top_documents) + """
     --------------------
     The question:
     """ + user_query + """
@@ -164,8 +202,8 @@ async def query(request: QueryRequest):
     # Return the response
     return {
         "answer": answer,
+        "results": hybrid_results,
         "file_name": ({"file_name": doc['file_name'], "file_path": doc['file_path']}),
-        "top_documents": top_documents,
         "metadata": metadata,
     }
 
