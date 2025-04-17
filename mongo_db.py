@@ -32,33 +32,53 @@ def get_all_embeddings():
         return []
     
 # Keyword search
-def keyword_search(query, limit=5):
+def keyword_search(query, file_name, limit=5):
     """Search for a keyword in the embeddings."""
     print(f"User Query: {query}")
     try:
         print(f"Executing keyword search for query: {query}")
-        results = EMBEDDINGS_COLLECTION.aggregate([
+        search_query = [
             {
-                "$search": {
-                    "index": "sentences_text",  # Ensure this is correct
-                    "text": {
-                        "query": query,
-                        "path": "sentences",
+                '$search': {
+                    'index': 'default',
+                    'compound': {
+                        'must': [
+                            {
+                                'text': {
+                                    'query': query,
+                                    'path': 'text'
+                                }
+                            }
+                        ],
+                        'filter': [
+                            {
+                                'text': {
+                                    'query': file_name,
+                                    'path': 'fileName'
+                                }
+                            }
+                        ]
                     }
                 }
-            },
-            {
-                "$limit": limit
-            },
-            {
-                "$project": {
-                    "_id": 0,
-                    "sentences": 1,
-                    "file_name": 1,
-                    "file_path": 1,
+            }, {
+                '$match': {
+                    'fileName': file_name
                 }
-            },
-        ])
+            }, {
+                '$addFields': {
+                    'score': {
+                        '$meta': 'searchScore'
+                    }
+                }
+            }, {
+                '$project': {
+                    'embedding': 0
+                }
+            }, {
+                '$limit': limit
+            }
+        ]
+        results = db[EMBEDDINGS_COLLECTION].aggregate(search_query)
         results_list = list(results)
         print(f"Keyword search results: {results_list}")
         return results_list

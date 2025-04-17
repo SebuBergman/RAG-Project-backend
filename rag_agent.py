@@ -156,7 +156,7 @@ async def query(request: QueryRequest):
     print(f"Vector Results: {vector_results}")
 
     # Perform keyword search
-    keyword_results = keyword_search(user_keyword, limit=5)
+    keyword_results = keyword_search(user_keyword, file_name, limit=5)
 
     # Debug: Log keyword results
     print(f"Keyword Results: {keyword_results}")
