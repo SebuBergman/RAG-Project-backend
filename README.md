@@ -52,18 +52,23 @@ This project uses python venv
 ```
 
 ### :running: Run Locally
+Create directories (data & embeddings)
+```bash
+New-Item -Name "data" -Type Directory
+New-Item -Name "embeddings" -Type Directory
+```
 
 ```bash
- rag_project/Scripts/activate
+rag_project/Scripts/activate
 ```
 
 Install required packages
 ```bash
- pip install -r requirements.txt
+pip install -r requirements.txt
 ```
 
 Start backend application
 ```bash
- uvicorn main:app --reload
+uvicorn main:app --reload
 ```
 
