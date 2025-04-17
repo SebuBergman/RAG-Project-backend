@@ -70,6 +70,6 @@ pip install -r requirements.txt
 
 Start backend application
 ```bash
-uvicorn main:app --reload
+uvicorn rag_agent:app --reload
 ```
 
