@@ -58,6 +58,7 @@ New-Item -Name "data" -Type Directory
 New-Item -Name "embeddings" -Type Directory
 ```
 
+Start the env
 ```bash
 rag_project/Scripts/activate
 ```
