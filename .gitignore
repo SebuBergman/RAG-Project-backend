@@ -26,3 +26,5 @@ chroma_db
 rag_project
 data
 embeddings
+
+__pycache__
