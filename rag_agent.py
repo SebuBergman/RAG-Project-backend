@@ -10,7 +10,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 from fastapi.middleware.cors import CORSMiddleware
 # pylint:disable=relative-beyond-top-level
 from create_embeddings import process_pdf, upload_to_s3
-from mongo_db import get_all_embeddings, insert_pdf_metadata, get_pdf_metadata
+from mongo_db import get_all_embeddings, insert_pdf_metadata, get_pdf_metadata, keyword_search, hybrid_search
 
 load_dotenv()
 
@@ -42,6 +42,8 @@ stored_pdfs = []
 # Model for query input
 class QueryRequest(BaseModel):
     question: str
+    keyword: str
+    file_name: str
 
 # Root endpoint
 @app.get("/")
@@ -65,7 +67,7 @@ async def upload_pdf(file: UploadFile = File(...)):
         # Process the uploaded PDF
         process_pdf(file_path)
 
-        # Save metadata with S3 URL
+        # Save metadata with S3
         pdf_metadata = {
             "file_name": file.filename,
             "file_path": s3_url,
@@ -87,86 +89,130 @@ def get_pdfs():
     try:
         pdfs = get_pdf_metadata()
 
-        # Normalize file paths to use forward slashes
-        for pdf in pdfs:
-            pdf["file_path"] = posixpath.normpath(pdf["file_path"].replace("\\", "/"))
-
         return {"pdfs": pdfs}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error retrieving PDFs: {str(e)}")
 
 @app.post("/query")
 async def query(request: QueryRequest):
-    """Answer a question using the RAG model based on embeddings."""
-    user_query = request.question
-
-    # Generate the embedding for the user query using Hugging Face API
-    payload = {"inputs": [user_query]}
-    response = requests.post(
-        os.getenv("HF_API_URL"),
-        headers={"Authorization": f"Bearer {os.getenv('HF_TOKEN')}"},
-        json=payload,
-    )
-    if response.status_code != 200:
-        raise HTTPException(status_code=response.status_code, detail="Error querying Hugging Face API")
-    query_embedding = np.array(response.json()).reshape(1, -1)
-
-    # Retrieve all embeddings from MongoDB
-    cursor = get_all_embeddings()
-    documents, embeddings, metadata = [], [], []
-
-    for doc in cursor:
-        documents.extend(doc['sentences'])
-        embeddings.extend(doc['embeddings'])
-        metadata.append({"file_name": doc['file_name'], "file_path": doc['file_path']})
-
-    # Check if there are embeddings in the database
-    if not embeddings:
-        raise HTTPException(status_code=404, detail="No embeddings found in the database.")
-
-    # Convert embeddings to NumPy array
-    embeddings = np.array(embeddings)
-
-    # Calculate cosine similarity between query embedding and document embeddings
-    similarities = cosine_similarity(query_embedding, embeddings).flatten()
-
-    # Get top 3 most similar documents (handle cases with fewer than 3 documents)
-    top_indices = similarities.argsort()[-4:][::-1]
-    top_documents = [documents[i] for i in top_indices]
-
-    # Preparing data for OpenAI
-    system_prompt = """
-    You are a helpful assistant. 
-    You only answer based on knowledge I'm providing you. You don't use your internal 
-    knowledge and you don't make things up.
-    If you don't know the answer, just say: I don't know
-    --------------------
-    The data:
-    """ + "<br>".join(["".join(doc) for doc in top_documents]) + """
-    --------------------
-    The question:
-    """ + user_query + """
-    """
-
-    # Get the response from OpenAI
+    """Answer a question using both vector and keyword search."""
     try:
-        openai_response = openai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_query}
-            ]
+        user_query = request.question
+        user_keyword = request.keyword
+        file_name = request.file_name
+
+        # Generate the embedding for the user query using Hugging Face API
+        payload = {"inputs": [user_query]}
+        response = requests.post(
+            os.getenv("HF_API_URL"),
+            headers={"Authorization": f"Bearer {os.getenv('HF_TOKEN')}"},
+            json=payload,
         )
-        answer = openai_response.choices[0].message.content
+        if response.status_code != 200:
+            raise HTTPException(status_code=response.status_code, detail="Error querying Hugging Face API")
+        query_embedding = np.array(response.json()).reshape(1, -1)
+
+        # Retrieve all embeddings from MongoDB
+        cursor = get_all_embeddings()
+        documents, embeddings, metadata = [], [], []
+
+        for doc in cursor:
+            documents.extend(doc['sentences'])
+            embeddings.extend(doc['embeddings'])
+            metadata.append({"file_name": doc['file_name'], "file_path": doc['file_path']})
+
+        if not embeddings:
+            raise HTTPException(status_code=404, detail="No embeddings found in the database.")
+
+        # Convert embeddings to NumPy array
+        embeddings = np.array(embeddings)
+
+        # Calculate cosine similarity
+        similarities = cosine_similarity(query_embedding, embeddings).flatten()
+
+        # Get top 5 most similar documents
+        top_indices = similarities.argsort()[-5:][::-1]
+        vector_results = [
+            {
+                "file_name": file_name,
+                "sentences": documents[i],
+                "score": float(similarities[i]),  # Convert numpy float to Python float
+            }
+            for i in top_indices
+        ]
+
+        # Perform keyword search
+        keyword_results = keyword_search(user_keyword, file_name, limit=5)
+        #print(f"Keyword Results: {keyword_results}")
+
+        # Combine results (assuming hybrid_search is defined elsewhere)
+        hybrid_results = hybrid_search(vector_results, keyword_results)
+        context = ""
+
+        if hybrid_results['vector_results']:
+            context += "VECTOR SEARCH RESULTS:\n"
+            context += "\n".join([
+                f"Document {i+1} (Score: {doc.get('score', 0):.2f}):\n{doc.get('sentences', '')}\n"
+                for i, doc in enumerate(hybrid_results['vector_results'])
+            ])
+
+        if hybrid_results['matched_sentences']:
+            context += "\nKEYWORD MATCHES:\n"
+            context += "\n".join([
+                f"• {sentence}"
+                for sentence in hybrid_results['matched_sentences']
+            ])
+
+        #print(f"Final context:\n{context}")
+
+        # Improved system prompt
+        system_prompt = f"""
+        Answer the question based only on the following context:
+        
+        Context:
+        {context}
+
+        Question: {user_query}
+
+        Rules:
+        - Provide a concise answer based on the context.
+        - If the answer is not in the context, say "I don't know."
+        - Never make up information
+        - Be concise and factual
+        """
+
+        #print(f"System Prompt: {system_prompt}")
+
+        # Get file metadata
+        file_metadata = {}
+        pdf_metadata = get_pdf_metadata()
+        if pdf_metadata and file_name:
+            file_metadata = next(
+                (doc for doc in pdf_metadata if doc['file_name'] == file_name),
+                {}
+            )
+
+        # Get OpenAI response
+        try:
+            openai_response = openai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": system_prompt.strip()},
+                    {"role": "user", "content": user_query}
+                ],
+                temperature=0.3
+            )
+            answer = openai_response.choices[0].message.content
+        except Exception as e:
+            print(f"OpenAI API error: {str(e)}")
+            answer = "I encountered an error while processing your question."
+
+        return {
+            "answer": answer,
+            "results": context,
+            "file_metadata": file_metadata
+        }
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error querying OpenAI: {str(e)}")
-
-    # Return the response
-    return {
-        "answer": answer,
-        "file_name": ({"file_name": doc['file_name'], "file_path": doc['file_path']}),
-        "top_documents": top_documents,
-        "metadata": metadata,
-    }
-
-    
+        print(f"Error in query endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))

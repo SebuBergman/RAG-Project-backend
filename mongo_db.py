@@ -14,12 +14,120 @@ DATABASE_NAME = os.getenv("DATABASE_NAME")
 # Connect to MongoDB
 client = MongoClient(MONGO_URI)
 db = client[DATABASE_NAME]
-EMBEDDINGS_COLLECTION_NAME = os.getenv("EMBEDDINGS_COLLECTION_NAME")
-PDFS_COLLECTION_NAME = os.getenv("PDFS_COLLECTION_NAME")
 
 # Collections
-EMBEDDINGS_COLLECTION = db[EMBEDDINGS_COLLECTION_NAME]  # Initialize as collection object
-PDFS_COLLECTION = db[PDFS_COLLECTION_NAME]  # Initialize as collection object
+EMBEDDINGS_COLLECTION = db[os.getenv("EMBEDDINGS_COLLECTION_NAME")]
+PDFS_COLLECTION = db[os.getenv("PDFS_COLLECTION_NAME")]
+
+# Fetch all embeddings from MongoDB
+def get_all_embeddings():
+    """Retrieve all embeddings from MongoDB."""
+    try:
+        # Get the collection object using the name from .env
+        collection = db[os.getenv("EMBEDDINGS_COLLECTION_NAME")]
+        
+        # Use the collection object to perform find()
+        embeddings = list(collection.find({}))
+        print(f"Successfully retrieved {len(embeddings)} embeddings.")
+        return embeddings
+    except Exception as e:
+        print(f"Error retrieving embeddings: {str(e)}")
+        return []
+    
+# Keyword search
+def keyword_search(query, file_name, limit=7):
+    """Search for a keyword in the sentences array with proper sentence matching."""
+    print(f"User Query: {query}, File Name: {file_name}")
+    try:
+        search_query = [
+            {
+                '$search': {
+                    'index': 'default',
+                    'compound': {
+                        'must': [
+                            {
+                                'text': {
+                                    'query': query,
+                                    'path': 'sentences',
+                                    'fuzzy': {}  # Add fuzzy search for better matching
+                                }
+                            }
+                        ],
+                        'filter': [
+                            {
+                                'text': {
+                                    'query': file_name,
+                                    'path': 'file_name'
+                                }
+                            }
+                        ]
+                    }
+                }
+            },
+            {
+                '$addFields': {
+                    'score': {'$meta': 'searchScore'},
+                    'matched_sentences': {
+                        '$filter': {
+                            'input': '$sentences',
+                            'as': 'sentence',
+                            'cond': {
+                                '$gt': [
+                                    {'$indexOfCP': [
+                                        {'$toLower': '$$sentence'}, 
+                                        {'$toLower': query}
+                                    ]},
+                                    -1
+                                ]
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                '$project': {
+                    'file_name': 1,
+                    'sentences': 1,
+                    'score': 1,
+                    'matched_sentences': 1,
+                    '_id': 0
+                }
+            },
+            {
+                '$limit': limit
+            }
+        ]
+        
+        results = EMBEDDINGS_COLLECTION.aggregate(search_query)
+        results_list = list(results)
+        
+        """print(f"Found {len(results_list)} results")
+        for result in results_list:
+            print(f"Match score: {result['score']}")
+            print(f"Matched sentences count: {len(result.get('matched_sentences', []))}")
+            if result.get('matched_sentences'):
+                print("Sample matched sentence:", result['matched_sentences'][0][:100] + "...")"""
+        
+        return results_list
+    except Exception as e:
+        print(f"Error in keyword search: {str(e)}")
+        return []
+
+# Hybrid search
+def hybrid_search(vector_results, keyword_results, limit=7):
+    """Combine results while preserving all matched sentences and vector results"""
+    # Collect all unique matched sentences from keyword search
+    matched_sentences = []
+    for result in keyword_results:
+        matched_sentences.extend(result.get('matched_sentences', []))
+    
+    # Combine with vector results (keeping original structure)
+    combined_results = {
+        'vector_results': vector_results[:limit],
+        'matched_sentences': matched_sentences[:limit]
+    }
+    
+    return combined_results
 
 # Store embeddings in MongoDB
 def insert_embeddings(data):
@@ -29,15 +137,6 @@ def insert_embeddings(data):
         print("Embeddings inserted successfully.")
     except Exception as e:
         print(f"Error inserting embeddings: {e}")
-
-# Fetch all embeddings from MongoDB
-def get_all_embeddings():
-    """Retrieve all embeddings from MongoDB."""
-    try:
-        return EMBEDDINGS_COLLECTION.find({})
-    except Exception as e:
-        print(f"Error retrieving embeddings: {e}")
-        return []
 
 # Fetch pdfs metadata into MongoDB
 def insert_pdf_metadata(metadata):
