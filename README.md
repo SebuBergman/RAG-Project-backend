@@ -41,3 +41,35 @@ GET /pdfs: Get's a list of uploaded and embeded pdfs
 Structured and ready for integration with any front-end via HTTP requests.
 
 <a href="https://github.com/SebuBergman/RAG-Project-frontend">RAG front-end github</a>
+
+🧰 Getting Started
+
+‼️ Prerequisites
+This project uses python venv
+
+```bash
+ python -m venv rag_project
+```
+
+### :running: Run Locally
+Create directories (data & embeddings)
+```bash
+New-Item -Name "data" -Type Directory
+New-Item -Name "embeddings" -Type Directory
+```
+
+Start the env
+```bash
+rag_project/Scripts/activate
+```
+
+Install required packages
+```bash
+pip install -r requirements.txt
+```
+
+Start backend application
+```bash
+uvicorn rag_agent:app --reload
+```
+

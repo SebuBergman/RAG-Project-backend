@@ -12,3 +12,12 @@ Florida Vegetable Garden Guide.pdf questions:
 Thriving with Social Anxiety.pdf questions:
   Tell me about mindfulness
   How do i meditate?
+
+Generative AI and LLMs for Dummies.pdf questions:
+  How do you manage gen ai projects with a cloud data platform
+  Explaining the importance of vector embeddings
+  Augmenting text retrieval
+
+Management as a technology.pdf questions:
+  Tell me about numerical estimation
+  Tell me about management by design
