@@ -64,7 +64,7 @@ def process_pdf(file_path):
         # Read PDF files and extract sentencess
         reader = SimpleDirectoryReader(input_files=[file_path])
         documents = reader.load_data()
-        print(f"Loaded {len(documents)} documents from {file_name}")
+        #print(f"Loaded {len(documents)} documents from {file_name}")
 
         # Perform sentence embedding using the API
         embeddings = []

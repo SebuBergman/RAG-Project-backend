@@ -143,7 +143,7 @@ async def query(request: QueryRequest):
 
         # Perform keyword search
         keyword_results = keyword_search(user_keyword, file_name, limit=5)
-        print(f"Keyword Results: {keyword_results}")
+        #print(f"Keyword Results: {keyword_results}")
 
         # Combine results (assuming hybrid_search is defined elsewhere)
         hybrid_results = hybrid_search(vector_results, keyword_results)
@@ -163,7 +163,7 @@ async def query(request: QueryRequest):
                 for sentence in hybrid_results['matched_sentences']
             ])
 
-        print(f"Final context:\n{context}")
+        #print(f"Final context:\n{context}")
 
         # Improved system prompt
         system_prompt = f"""
@@ -181,7 +181,7 @@ async def query(request: QueryRequest):
         - Be concise and factual
         """
 
-        print(f"System Prompt: {system_prompt}")
+        #print(f"System Prompt: {system_prompt}")
 
         # Get file metadata
         file_metadata = {}

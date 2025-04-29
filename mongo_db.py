@@ -101,36 +101,17 @@ def keyword_search(query, file_name, limit=7):
         results = EMBEDDINGS_COLLECTION.aggregate(search_query)
         results_list = list(results)
         
-        print(f"Found {len(results_list)} results")
+        """print(f"Found {len(results_list)} results")
         for result in results_list:
             print(f"Match score: {result['score']}")
             print(f"Matched sentences count: {len(result.get('matched_sentences', []))}")
             if result.get('matched_sentences'):
-                print("Sample matched sentence:", result['matched_sentences'][0][:100] + "...")
+                print("Sample matched sentence:", result['matched_sentences'][0][:100] + "...")"""
         
         return results_list
     except Exception as e:
         print(f"Error in keyword search: {str(e)}")
         return []
-    
-# Simple test function
-def test_search():
-    test_query = [
-        {
-            '$search': {
-                'index': 'default',
-                'text': {
-                    'query': "composting",  # Try different terms here
-                    'path': 'sentences'
-                }
-            }
-        },
-        {'$limit': 7}
-    ]
-    results = EMBEDDINGS_COLLECTION.aggregate(test_query)
-    results_list = list(results)  # Convert cursor to list
-    print("Test search results:", results_list)  # Add this line
-    return results_list
 
 # Hybrid search
 def hybrid_search(vector_results, keyword_results, limit=7):
