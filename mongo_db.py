@@ -14,29 +14,31 @@ DATABASE_NAME = os.getenv("DATABASE_NAME")
 # Connect to MongoDB
 client = MongoClient(MONGO_URI)
 db = client[DATABASE_NAME]
-EMBEDDINGS_COLLECTION_NAME = os.getenv("EMBEDDINGS_COLLECTION_NAME")
-PDFS_COLLECTION_NAME = os.getenv("PDFS_COLLECTION_NAME")
 
 # Collections
-EMBEDDINGS_COLLECTION = db[EMBEDDINGS_COLLECTION_NAME]
-PDFS_COLLECTION = db[PDFS_COLLECTION_NAME]
+EMBEDDINGS_COLLECTION = db[os.getenv("EMBEDDINGS_COLLECTION_NAME")]
+PDFS_COLLECTION = db[os.getenv("PDFS_COLLECTION_NAME")]
 
 # Fetch all embeddings from MongoDB
 def get_all_embeddings():
     """Retrieve all embeddings from MongoDB."""
     try:
-        print("Embeddings retrieved successfully.")
-        return EMBEDDINGS_COLLECTION.find({})
+        # Get the collection object using the name from .env
+        collection = db[os.getenv("EMBEDDINGS_COLLECTION_NAME")]
+        
+        # Use the collection object to perform find()
+        embeddings = list(collection.find({}))
+        print(f"Successfully retrieved {len(embeddings)} embeddings.")
+        return embeddings
     except Exception as e:
-        print(f"Error retrieving embeddings: {e}")
+        print(f"Error retrieving embeddings: {str(e)}")
         return []
     
 # Keyword search
-def keyword_search(query, file_name, limit=5):
-    """Search for a keyword in the embeddings."""
-    print(f"User Query: {query}")
+def keyword_search(query, file_name, limit=7):
+    """Search for a keyword in the sentences array with proper sentence matching."""
+    print(f"User Query: {query}, File Name: {file_name}")
     try:
-        print(f"Executing keyword search for query: {query}")
         search_query = [
             {
                 '$search': {
@@ -46,7 +48,8 @@ def keyword_search(query, file_name, limit=5):
                             {
                                 'text': {
                                     'query': query,
-                                    'path': 'text'
+                                    'path': 'sentences',
+                                    'fuzzy': {}  # Add fuzzy search for better matching
                                 }
                             }
                         ],
@@ -54,84 +57,96 @@ def keyword_search(query, file_name, limit=5):
                             {
                                 'text': {
                                     'query': file_name,
-                                    'path': 'fileName'
+                                    'path': 'file_name'
                                 }
                             }
                         ]
                     }
                 }
-            }, {
-                '$match': {
-                    'fileName': file_name
-                }
-            }, {
+            },
+            {
                 '$addFields': {
-                    'score': {
-                        '$meta': 'searchScore'
+                    'score': {'$meta': 'searchScore'},
+                    'matched_sentences': {
+                        '$filter': {
+                            'input': '$sentences',
+                            'as': 'sentence',
+                            'cond': {
+                                '$gt': [
+                                    {'$indexOfCP': [
+                                        {'$toLower': '$$sentence'}, 
+                                        {'$toLower': query}
+                                    ]},
+                                    -1
+                                ]
+                            }
+                        }
                     }
                 }
-            }, {
+            },
+            {
                 '$project': {
-                    'embedding': 0
+                    'file_name': 1,
+                    'sentences': 1,
+                    'score': 1,
+                    'matched_sentences': 1,
+                    '_id': 0
                 }
-            }, {
+            },
+            {
                 '$limit': limit
             }
         ]
-        results = db[EMBEDDINGS_COLLECTION].aggregate(search_query)
+        
+        results = EMBEDDINGS_COLLECTION.aggregate(search_query)
         results_list = list(results)
-        print(f"Keyword search results: {results_list}")
+        
+        print(f"Found {len(results_list)} results")
+        for result in results_list:
+            print(f"Match score: {result['score']}")
+            print(f"Matched sentences count: {len(result.get('matched_sentences', []))}")
+            if result.get('matched_sentences'):
+                print("Sample matched sentence:", result['matched_sentences'][0][:100] + "...")
+        
         return results_list
     except Exception as e:
-        print(f"Error searching for keyword: {e}")
+        print(f"Error in keyword search: {str(e)}")
         return []
     
+# Simple test function
+def test_search():
+    test_query = [
+        {
+            '$search': {
+                'index': 'default',
+                'text': {
+                    'query': "composting",  # Try different terms here
+                    'path': 'sentences'
+                }
+            }
+        },
+        {'$limit': 7}
+    ]
+    results = EMBEDDINGS_COLLECTION.aggregate(test_query)
+    results_list = list(results)  # Convert cursor to list
+    print("Test search results:", results_list)  # Add this line
+    return results_list
+
 # Hybrid search
-def hybrid_search(vector_results, keyword_results, limit=5):
-    """Combine vector and keyword search results."""
-    # Convert results to dictionaries keyed by file_name for easier merging
-    vector_dict = {result.get("file_name", "unknown"): result for result in vector_results}
-    keyword_dict = {result.get("file_name", "unknown"): result for result in keyword_results}
-
-    # Merge results, prioritize documents that appear in both searches
-    combined_results = []
-    for file_name in keyword_dict.keys():
-        if file_name in vector_dict:
-            combined_results.append({
-                **keyword_dict[file_name],
-                "vector_score": vector_dict[file_name].get("score", 0),
-                "keyword_score": keyword_dict[file_name].get("score", 0),
-            })
-
-    for file_name in vector_dict.keys():
-        if file_name not in keyword_dict:
-            combined_results.append(vector_dict[file_name])
-
-    # Sort by combined score
-    combined_results.sort(key=lambda x: x.get("vector_score", 0) + x.get("keyword_score", 0), reverse=True)
-
-    # If no combined results exist, return vector results only
-    if not combined_results:
-        combined_results = vector_results
-
-    print(f"Combined results: {combined_results}")
-
-    # Collect up to 'limit' top sentences
-    top_sentences = []
-    for result in combined_results:
-        if "sentences" in result:
-            # If 'sentences' is a list, extend the top_sentences list
-            if isinstance(result["sentences"], list):
-                top_sentences.extend(result["sentences"])
-            else:
-                # Otherwise, append the single sentence
-                top_sentences.append(result["sentences"])
-        # Stop collecting if we reach the limit
-        if len(top_sentences) >= limit:
-            break
-
-    # Return only the top 'limit' sentences
-    return top_sentences[:limit]
+def hybrid_search(vector_results, keyword_results, limit=7):
+    """Combine results while preserving all matched sentences and vector results"""
+    # Collect all unique matched sentences from keyword search
+    matched_sentences = []
+    for result in keyword_results:
+        matched_sentences.extend(result.get('matched_sentences', []))
+    
+    # Combine with vector results (keeping original structure)
+    combined_results = {
+        'vector_results': vector_results[:limit],
+        'matched_sentences': matched_sentences[:limit]
+    }
+    
+    return combined_results
 
 # Store embeddings in MongoDB
 def insert_embeddings(data):

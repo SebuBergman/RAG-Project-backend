@@ -5,8 +5,9 @@ Designing Web APIs.pdf questions:
   How do i create basic authentication?
 
 Florida Vegetable Garden Guide.pdf questions:
-  What are the benefits of composting?
-  Why should i mulch my crops?
+  What is a suitable mulch? Keyword: mulch
+  What are the benefits of composting? Keyword: compost
+  Why should i mulch my crops? Keyword: mulch
 
 Thriving with Social Anxiety.pdf questions:
   Tell me about mindfulness
