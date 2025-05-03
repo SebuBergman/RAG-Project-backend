@@ -1,6 +1,8 @@
 import os
 import json
 import requests
+from langchain_experimental.text_splitter import SemanticChunker
+from langchain_openai.embeddings import OpenAIEmbeddings
 from llama_index.core import SimpleDirectoryReader
 from dotenv import load_dotenv
 from mongo_db import insert_embeddings
@@ -61,29 +63,43 @@ def process_pdf(file_path):
         # Log file processing
         print(f"Processing file: {file_name}, S3 Path: {s3_url}")
 
-        # Read PDF files and extract sentencess
+        # Read PDF files
         reader = SimpleDirectoryReader(input_files=[file_path])
         documents = reader.load_data()
-        #print(f"Loaded {len(documents)} documents from {file_name}")
 
-        # Perform sentence embedding using the API
+        # Initialize semantic chunker and create chunks
+        text_splitter = SemanticChunker(
+            OpenAIEmbeddings(model="text-embedding-3-large"),
+            breakpoint_threshold_type="percentile",
+            breakpoint_threshold_amount=0.8,
+            )
+
+        # Process document and create semantic chunks
         embeddings = []
         for doc in documents:
-            sentences = doc.text.split('. ')  # Split content into sentences
-            payload = {"inputs": sentences}
+            # Split document into semantic chunks
+            chunks = text_splitter.create_documents([doc.text])
+
+            # Extract sentences from chunks
+            chunk_sentences = []
+            for chunk in chunks:
+                chunk_sentences.extend(chunk.page_content.split(". "))
+
+            # Get embeddings for each sentence
+            payload = {"inputs": chunk_sentences}
             response = query_hf_api(payload)
 
             # Log API response
             if "error" in response:
                 print(f"Error embedding document {doc.doc_id}: {response['error']}")
             else:
-                doc_embeddings = response
                 embeddings.append({
                     "unique_id": unique_id,
                     "file_name": file_name,
                     "file_path": s3_url,
-                    "sentences": sentences,
-                    "embeddings": doc_embeddings
+                    "sentences": chunk_sentences,
+                    "embeddings": response,
+                    "semantic_chunks": [chunk.page_content for chunk in chunks],
                 })
 
         # Save embeddings to a file
