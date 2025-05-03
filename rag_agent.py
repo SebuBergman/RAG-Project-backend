@@ -1,7 +1,6 @@
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from pydantic import BaseModel
 import os
-import posixpath  # For consistent forward slash paths
 import requests
 import numpy as np
 from openai import OpenAI
