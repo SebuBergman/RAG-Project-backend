@@ -8,8 +8,8 @@ from dotenv import load_dotenv
 from sklearn.metrics.pairwise import cosine_similarity
 from fastapi.middleware.cors import CORSMiddleware
 # pylint:disable=relative-beyond-top-level
-from create_embeddings import process_pdf, upload_to_s3
-from mongo_db import get_all_embeddings, insert_pdf_metadata, get_pdf_metadata, keyword_search, hybrid_search
+from create_embeddings import process_pdf, upload_to_s3, delete_all_s3_files
+from mongo_db import get_all_embeddings, get_cache_collection, get_pdf_metadata, store_query_result, find_similar_cached_query, clear_cache_entries, insert_pdf_metadata, keyword_search, hybrid_search, clear_all_embeddings, clear_all_pdfs
 
 load_dotenv()
 
@@ -96,6 +96,7 @@ def get_pdfs():
 async def query(request: QueryRequest):
     """Answer a question using both vector and keyword search."""
     try:
+        print(f"Received query: {request.question}, Keyword: {request.keyword}, File: {request.file_name}")
         user_query = request.question
         user_keyword = request.keyword
         file_name = request.file_name
@@ -110,6 +111,20 @@ async def query(request: QueryRequest):
         if response.status_code != 200:
             raise HTTPException(status_code=response.status_code, detail="Error querying Hugging Face API")
         query_embedding = np.array(response.json()).reshape(1, -1)
+
+        # Check cache first
+        print("Checking cache for similar queries...")
+        cached_result = find_similar_cached_query(query_embedding)
+        if cached_result:
+            print(f"Cache hit: Similar query found - {cached_result['query']}")
+
+            return {
+                "answer": cached_result["answer"],
+                "results": cached_result["context"],
+                "file_metadata": {},
+                "cached": True
+            }
+        print("No similar queries found in cache.")
 
         # Retrieve all embeddings from MongoDB
         cursor = get_all_embeddings()
@@ -180,8 +195,6 @@ async def query(request: QueryRequest):
         - Be concise and factual
         """
 
-        #print(f"System Prompt: {system_prompt}")
-
         # Get file metadata
         file_metadata = {}
         pdf_metadata = get_pdf_metadata()
@@ -206,6 +219,16 @@ async def query(request: QueryRequest):
             print(f"OpenAI API error: {str(e)}")
             answer = "I encountered an error while processing your question."
 
+        # Store query result in cache
+        print("Storing query result in cache...")
+        store_query_result(
+            query_text=user_query,
+            query_embedding=query_embedding,
+            answer=answer,
+            context=context,
+        )
+        print("Query result stored successfully.")
+
         return {
             "answer": answer,
             "results": context,
@@ -215,3 +238,89 @@ async def query(request: QueryRequest):
     except Exception as e:
         print(f"Error in query endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+    
+@app.get("/cache/stats")
+def get_cache_stats():
+    """Get statistics about the cache."""
+    try:
+        stats = get_cache_stats()
+        if "error" in stats:
+            raise HTTPException(status_code=500, detail=stats["error"])
+        return stats
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/cache/clear_old")
+def clear_old_cache_entries(days: int = 30):
+    """Clear cache entries older than specified days (default: 30)."""
+    try:
+        if days <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Days parameter must be positive"
+            )
+            
+        deleted_count = clear_cache_entries(days=days)
+        return {
+            "status": "success",
+            "message": f"Deleted {deleted_count} entries older than {days} days",
+            "deleted_count": deleted_count,
+            "days": days
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error clearing old cache entries: {str(e)}"
+        )
+
+@app.post("/cache/clear_all")
+def clear_whole_cache():
+    """Clear ALL cache entries."""
+    try:
+        deleted_count = clear_cache_entries()  # No days parameter means clear all
+        return {
+            "status": "success",
+            "message": f"Deleted all {deleted_count} cache entries",
+            "deleted_count": deleted_count
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error clearing cache: {str(e)}"
+        )
+
+@app.get("/cache/entries")
+def list_cache_entries(limit: int = 10):
+    """List all recent cache entries."""
+    try:
+        collection = get_cache_collection()
+        entries = list(collection.find(
+            {},
+            {"_id": 0, "query": 1, "timestamp": 1}
+        ).sort("timestamp", -1).limit(limit))
+        return {"entries": entries}
+    except Exception as e:
+        print(f"Error listing cache entries: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+    
+@app.post("/clear_all_data")
+def clear_all_data():
+    """Clear all embeddings,PDF metadata, and files from S3."""
+    try:
+        embeddings_deleted = clear_all_embeddings()
+        cache_deleted = clear_cache_entries()
+        pdf_metadata_deleted = clear_all_pdfs()
+        s3_files_deleted = delete_all_s3_files()
+        return {
+            "status": "success",
+            "message": "All data cleared successfully.",
+            "details": {
+                "embeddings_deleted": embeddings_deleted,
+                "cache_deleted": cache_deleted,
+                "pdf_metadata_deleted": pdf_metadata_deleted,
+                "s3_files_deleted": s3_files_deleted
+            }
+        }
+    except Exception as e:
+        print(f"Error clearing all data: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to clear all data: {e}")
