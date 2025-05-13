@@ -308,3 +308,23 @@ def get_cache_stats():
     except Exception as e:
         print(f"Error getting cache stats: {str(e)}")
         return {"error": str(e)}
+    
+def clear_all_embeddings():
+    """Clear all embeddings from the database."""
+    try:
+        result = EMBEDDINGS_COLLECTION.delete_many({})
+        print(f"Deleted {result.deleted_count} embeddings.")
+        return result.deleted_count
+    except Exception as e:
+        print(f"Error clearing all embeddings: {str(e)}")
+        raise
+
+def clear_all_pdfs():
+    """Clear all PDFs from the database."""
+    try:
+        result = PDFS_COLLECTION.delete_many({})
+        print(f"Deleted {result.deleted_count} PDF metadata entries from MongoDB.")
+        return result.deleted_count
+    except Exception as e:
+        print(f"Error clearing PDF metadata: {e}")
+        raise

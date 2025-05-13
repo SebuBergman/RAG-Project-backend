@@ -118,3 +118,23 @@ def process_pdf(file_path):
     except Exception as e:
         print(f"Error processing PDF {file_path}: {e}")
         raise
+
+def delete_all_s3_files():
+    """Delete all files in the S3 bucket."""
+    try:
+        bucket_name = os.getenv("S3_BUCKET_NAME")
+
+        # List all objects in the bucket
+        objects = s3_client.list_objects_v2(Bucket=bucket_name)
+        if 'Contents' in objects:
+            keys = [{"Key": obj["Key"]} for obj in objects['Contents']]
+            delete_response = s3_client.delete_objects(
+                Bucket=bucket_name, Delete={"Objects": keys}
+            )
+            return len(keys)
+        else:
+            print("No files found in the S3 bucket.")
+            return 0
+    except Exception as e:
+        print(f"Error deleting files from S3: {e}")
+        raise

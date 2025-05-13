@@ -8,8 +8,8 @@ from dotenv import load_dotenv
 from sklearn.metrics.pairwise import cosine_similarity
 from fastapi.middleware.cors import CORSMiddleware
 # pylint:disable=relative-beyond-top-level
-from create_embeddings import process_pdf, upload_to_s3
-from mongo_db import get_all_embeddings, get_cache_collection, get_pdf_metadata, store_query_result, find_similar_cached_query, clear_cache_entries, insert_pdf_metadata, keyword_search, hybrid_search
+from create_embeddings import process_pdf, upload_to_s3, delete_all_s3_files
+from mongo_db import get_all_embeddings, get_cache_collection, get_pdf_metadata, store_query_result, find_similar_cached_query, clear_cache_entries, insert_pdf_metadata, keyword_search, hybrid_search, clear_all_embeddings, clear_all_pdfs
 
 load_dotenv()
 
@@ -302,3 +302,25 @@ def list_cache_entries(limit: int = 10):
     except Exception as e:
         print(f"Error listing cache entries: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+    
+@app.post("/clear_all_data")
+def clear_all_data():
+    """Clear all embeddings,PDF metadata, and files from S3."""
+    try:
+        embeddings_deleted = clear_all_embeddings()
+        cache_deleted = clear_cache_entries()
+        pdf_metadata_deleted = clear_all_pdfs()
+        s3_files_deleted = delete_all_s3_files()
+        return {
+            "status": "success",
+            "message": "All data cleared successfully.",
+            "details": {
+                "embeddings_deleted": embeddings_deleted,
+                "cache_deleted": cache_deleted,
+                "pdf_metadata_deleted": pdf_metadata_deleted,
+                "s3_files_deleted": s3_files_deleted
+            }
+        }
+    except Exception as e:
+        print(f"Error clearing all data: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to clear all data: {e}")
