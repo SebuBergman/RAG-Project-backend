@@ -157,27 +157,20 @@ async def query(request: QueryRequest):
 
         # Perform keyword search
         keyword_results = keyword_search(user_keyword, file_name, limit=5)
-        #print(f"Keyword Results: {keyword_results}")
+        print(f"Keyword Results: {keyword_results.length}")
 
         # Combine results (assuming hybrid_search is defined elsewhere)
-        hybrid_results = hybrid_search(vector_results, keyword_results)
-        context = ""
+        hybrid_results = hybrid_search(vector_results, keyword_results, alpha=0.7, limit=7)
 
-        if hybrid_results['vector_results']:
-            context += "VECTOR SEARCH RESULTS:\n"
-            context += "\n".join([
-                f"Document {i+1} (Score: {doc.get('score', 0):.2f}):\n{doc.get('sentences', '')}\n"
-                for i, doc in enumerate(hybrid_results['vector_results'])
-            ])
-
-        if hybrid_results['matched_sentences']:
-            context += "\nKEYWORD MATCHES:\n"
-            context += "\n".join([
-                f"• {sentence}"
-                for sentence in hybrid_results['matched_sentences']
-            ])
-
-        #print(f"Final context:\n{context}")
+        # Build context from top hybrid results
+        context_lines = []
+        for i, doc in enumerate(hybrid_results):
+            context_lines.append(
+                f"Document {i+1} (Hybrid Score: {doc["hybrid_score"]:.2f} | "
+                f"Semantic: {doc["vector_score"]:.2f} | Keyword: {doc["keyword_score"]:.2f})\n"
+                f"{doc['sentence']}\n"
+            )
+        context = "\n".join(context_lines)
 
         # Improved system prompt
         system_prompt = f"""
