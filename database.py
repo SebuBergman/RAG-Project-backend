@@ -98,99 +98,79 @@ def vector_search(query_embedding, limit=7):
         return []
     
 # Keyword search
-def keyword_search(query, file_name, limit=7):
-    """Search for a keyword in the sentences array with proper sentence matching."""
+def keyword_search_local(query, file_name=None, limit=7):
+    """Simple local keyword search using text metadata stored in Milvus."""
     print(f"User Query: {query}, File Name: {file_name}")
     try:
-        search_query = [
-            {
-                '$search': {
-                    'index': 'default',
-                    'compound': {
-                        'must': [
-                            {
-                                'text': {
-                                    'query': query,
-                                    'path': 'sentences',
-                                    'fuzzy': {}  # Add fuzzy search for better matching
-                                }
-                            }
-                        ],
-                        'filter': [
-                            {
-                                'text': {
-                                    'query': file_name,
-                                    'path': 'file_name'
-                                }
-                            }
-                        ]
-                    }
-                }
-            },
-            {
-                '$addFields': {
-                    'score': {'$meta': 'searchScore'},
-                    'matched_sentences': {
-                        '$filter': {
-                            'input': '$sentences',
-                            'as': 'sentence',
-                            'cond': {
-                                '$gt': [
-                                    {'$indexOfCP': [
-                                        {'$toLower': '$$sentence'}, 
-                                        {'$toLower': query}
-                                    ]},
-                                    -1
-                                ]
-                            }
-                        }
-                    }
-                }
-            },
-            {
-                '$project': {
-                    'file_name': 1,
-                    'sentences': 1,
-                    'score': 1,
-                    'matched_sentences': 1,
-                    '_id': 0
-                }
-            },
-            {
-                '$limit': limit
-            }
-        ]
+        all_data = milvus_client.query(
+            collection_name=MILVUS_COLLECTION_NAME,
+            filter_expression=None,
+            output_fields=["file_name", "sentence"]
+        )
+
+        # Basic filtering
+        results = []
+        for item in all_data:
+            if query.lower() in item["sentence"].lower():
+                if not file_name or item["file_name"] == file_name:
+                    results.append(item)
+                    if len(results) >= limit:
+                        break
         
-        results = EMBEDDINGS_COLLECTION.aggregate(search_query)
-        results_list = list(results)
-        
-        """print(f"Found {len(results_list)} results")
-        for result in results_list:
-            print(f"Match score: {result['score']}")
-            print(f"Matched sentences count: {len(result.get('matched_sentences', []))}")
-            if result.get('matched_sentences'):
-                print("Sample matched sentence:", result['matched_sentences'][0][:100] + "...")"""
-        
-        return results_list
+        print(f"Keyword search found {len(results)} results.")
+        return results
     except Exception as e:
-        print(f"Error in keyword search: {str(e)}")
+        print(f"Error in local keyword search: {str(e)}")
         return []
 
 # Hybrid search
-def hybrid_search(vector_results, keyword_results, limit=7):
-    """Combine results while preserving all matched sentences and vector results"""
-    # Collect all unique matched sentences from keyword search
-    matched_sentences = []
+def hybrid_search(vector_results, keyword_results, alpha=0.7, limit=7):
+    """
+    Combine vector and keyword results into a single ranked list.
+    alpha = weighting factor (semantic importance)
+    (1 - alpha) = keyword importance
+    """
+    
+    # Create a map of keyword scores
+    keyword_map = {}
     for result in keyword_results:
-        matched_sentences.extend(result.get('matched_sentences', []))
+        sent = result.get("sentence") or result.get("sentences", "")
+        keyword_map[sent] = 1.0 # base score
+        # Optionally, fuzzy match to give proportional weight
+        # keyword_map[sent] = fuzz.partial_ratio(query.lower(), sent.lower()) / 100.0
+
+    # Merge and compute hybrid scores
+    merged = []
+    for vec in vector_results:
+        sentence = vec.get("sentence") or vec.get("sentences", "")
+        file_name = vec.get("file_name")
+        vector_score = vec.get("score", 0)
+        keyword_score = keyword_map.get(sentence, 0)
+
+        hybrid_score = (alpha * (vector_score)) + ((1 - alpha) * keyword_score)
+        merged.append({
+            "file_name": file_name,
+            "sentence": sentence,
+            "vector_score": vector_score,
+            "keyword_score": keyword_score,
+            "hybrid_score": hybrid_score
+        })
     
-    # Combine with vector results (keeping original structure)
-    combined_results = {
-        'vector_results': vector_results[:limit],
-        'matched_sentences': matched_sentences[:limit]
-    }
+    # Add any keyword-only results not in vector results
+    for kw in keyword_results:
+        sent = kw.get("sentence") or kw.get("sentences", "")
+        if sent not in [m["sentence"] for m in merged]:
+            merged.append({
+                "file_name": kw.get("file_name"),
+                "sentence": sent,
+                "vector_score": 0,
+                "keyword_score": 1.0,
+                "hybrid_score": (1 - alpha) * 1.0
+            })
     
-    return combined_results
+    # Soft by hybrid score descending
+    merged_sorted = sorted(merged, key=lambda x: x["hybrid_score"], reverse=True)
+    return merged_sorted[:limit]
 
 # Fetch pdfs metadata into MongoDB
 def insert_pdf_metadata(metadata):
