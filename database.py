@@ -4,6 +4,8 @@ from dotenv import load_dotenv
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 import datetime
+from pymilvus import MilvusClient
+
 
 load_dotenv()
 
@@ -15,29 +17,55 @@ MONGO_URI = os.getenv("MONGO_URI")
 DATABASE_NAME = os.getenv("DATABASE_NAME")
 
 # Connect to MongoDB
-client = MongoClient(MONGO_URI)
-db = client[DATABASE_NAME]
+mongo_client = MongoClient(MONGO_URI)
+mongo_db = mongo_client[DATABASE_NAME]
 
-# Collections
-QUERY_CACHE_COLLECTION = db[os.getenv("QUERY_CACHE_COLLECTION_NAME", "query_cache")]
-EMBEDDINGS_COLLECTION = db[os.getenv("EMBEDDINGS_COLLECTION_NAME")]
-PDFS_COLLECTION = db[os.getenv("PDFS_COLLECTION_NAME")]
+# Milvus Lite Configuration
+MILVUS_DB_PATH = os.getenv("MILVUS_DB_PATH", "milvus_local.db")
+MILVUS_COLLECTION_NAME = os.getenv("MILVUS_COLLECTION_NAME", "embeddings")
 
-# Fetch all embeddings from MongoDB
-def get_all_embeddings():
-    """Retrieve all embeddings from MongoDB."""
+# Initialize Milvus Lite client (stores in local file)
+milvus_client = MilvusClient(MILVUS_DB_PATH)
+
+# Create collections if they don't exist
+if MILVUS_COLLECTION_NAME not in milvus_client.list_collections():
+    milvus_client.create_collection(
+        collection_name=MILVUS_COLLECTION_NAME,
+        dimension=384  # use the embedding dimension you're generating
+    )
+
+# MongoDB Collections
+QUERY_CACHE_COLLECTION = mongo_db[os.getenv("QUERY_CACHE_COLLECTION_NAME", "query_cache")]
+PDFS_COLLECTION = mongo_db[os.getenv("PDFS_COLLECTION_NAME")]
+
+# Store embeddings in Milvus Lite
+def insert_embeddings(data):
+    """Insert embeddings into Milvus Lite."""
     try:
-        # Get the collection object using the name from .env
-        collection = db[os.getenv("EMBEDDINGS_COLLECTION_NAME")]
-        
-        # Use the collection object to perform find()
-        embeddings = list(collection.find({}))
-        print(f"Successfully retrieved {len(embeddings)} embeddings.")
-        return embeddings
+        vectors = [d["embedding"] for d in data]
+        metadata = [{"file_name": d["file_name"], "sentence": d["sentence"]} for d in data]
+
+        milvus_client.insert(
+            collection_name=MILVUS_COLLECTION_NAME,
+            data=vectors,
+            metadata=metadata
+        )
+        print(f"Inserted {len(vectors)} embeddings into Milvus Lite.")
     except Exception as e:
-        print(f"Error retrieving embeddings: {str(e)}")
-        return []
-    
+        print(f"Error inserting embeddings into Milvus: {e}")
+
+# Retrieve all embeddings from Milvus Lite
+def get_all_embeddings():
+    """Retrieve all embeddings from Milvus Lite."""
+    try:
+        count = milvus_client.get_collection_stats(collection_name=MILVUS_COLLECTION_NAME)
+        print(f"Milvus collection has {count} embeddings.")
+        return count
+    except Exception as e:
+        print(f"Error retrieving embeddings from Milvus: (e)")
+        return 0
+
+# Get cached collection from MongoDB
 def get_cache_collection():
     """Get the cache collection instance"""
     try:
@@ -46,6 +74,28 @@ def get_cache_collection():
     except Exception as e:
         print(f"Error fetching cache collection: {str(e)}")
         raise
+
+def vector_search(query_embedding, limit=7):
+    """Perform vector search in Milvus Lite."""
+    try:
+        print("Performing vector search...")
+        results = milvus_client.search(
+            collection_name=MILVUS_COLLECTION_NAME,
+            data=[query_embedding.flatten().tolist()],
+            limit=limit,
+        )
+
+        formatted_results = []
+        for hit in results[0]:
+            formatted_results.append({
+                "file_name": hit["entity"]["file_name"],
+                "sentence": hit["entity"]["sentence"],
+                "score": hit["distance"],
+            })
+        return formatted_results
+    except Exception as e:
+        print(f"Error during vector search: {(e)}")
+        return []
     
 # Keyword search
 def keyword_search(query, file_name, limit=7):
@@ -142,15 +192,6 @@ def hybrid_search(vector_results, keyword_results, limit=7):
     
     return combined_results
 
-# Store embeddings in MongoDB
-def insert_embeddings(data):
-    """Insert embeddings into MongoDB."""
-    try:
-        EMBEDDINGS_COLLECTION.insert_many(data)
-        print("Embeddings inserted successfully.")
-    except Exception as e:
-        print(f"Error inserting embeddings: {e}")
-
 # Fetch pdfs metadata into MongoDB
 def insert_pdf_metadata(metadata):
     """Insert PDF metadata into MongoDB."""
@@ -161,13 +202,12 @@ def insert_pdf_metadata(metadata):
         print(f"Error inserting PDF metadata: {e}")
 
 # Fetch pdf metadata from MongoDB
-def get_pdf_metadata():
-    """Retrieve PDF metadata from MongoDB."""
+"""def get_pdf_metadata():
     try:
         return list(PDFS_COLLECTION.find({}, {"_id": 0, "file_name": 1, "file_path": 1}))
     except Exception as e:
         print(f"Error retrieving PDF metadata: {e}")
-        return []
+        return []"""
     
 def store_query_result(query_text, query_embedding, answer, context, threshold=0.9):
     """Store query result in cache."""
@@ -312,9 +352,8 @@ def get_cache_stats():
 def clear_all_embeddings():
     """Clear all embeddings from the database."""
     try:
-        result = EMBEDDINGS_COLLECTION.delete_many({})
-        print(f"Deleted {result.deleted_count} embeddings.")
-        return result.deleted_count
+        milvus_client.drop_collection(MILVUS_COLLECTION_NAME)
+        print(f"Dropped Milvus collection succesfully.")
     except Exception as e:
         print(f"Error clearing all embeddings: {str(e)}")
         raise
