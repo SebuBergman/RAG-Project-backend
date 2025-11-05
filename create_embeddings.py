@@ -108,12 +108,12 @@ def process_pdf(file_path):
             json.dump(embeddings, f, indent=4)
         print(f"Embeddings saved to {output_file}")
 
-        # Insert embeddings into MongoDB
+        # Insert embeddings into Milvus
         try:
             insert_embeddings(embeddings)
-            print(f"Embeddings for {file_name} inserted into MongoDB.")
+            print(f"Embeddings for {file_name} inserted into Milvus Lite.")
         except Exception as e:
-            print(f"Error inserting embeddings into MongoDB: {e}")
+            print(f"Error inserting embeddings into Milvus: {e}")
 
     except Exception as e:
         print(f"Error processing PDF {file_path}: {e}")
