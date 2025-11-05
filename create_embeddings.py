@@ -5,7 +5,7 @@ from langchain_experimental.text_splitter import SemanticChunker
 from langchain_openai.embeddings import OpenAIEmbeddings
 from llama_index.core import SimpleDirectoryReader
 from dotenv import load_dotenv
-from mongo_db import insert_embeddings
+from database import insert_embeddings
 import boto3
 from botocore.exceptions import NoCredentialsError
 

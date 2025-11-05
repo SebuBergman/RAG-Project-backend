@@ -9,7 +9,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 from fastapi.middleware.cors import CORSMiddleware
 # pylint:disable=relative-beyond-top-level
 from create_embeddings import process_pdf, upload_to_s3, delete_all_s3_files
-from mongo_db import get_all_embeddings, get_cache_collection, get_pdf_metadata, store_query_result, find_similar_cached_query, clear_cache_entries, insert_pdf_metadata, keyword_search, hybrid_search, clear_all_embeddings, clear_all_pdfs
+from database import get_all_embeddings, get_cache_collection, get_pdf_metadata, store_query_result, find_similar_cached_query, clear_cache_entries, insert_pdf_metadata, keyword_search, hybrid_search, clear_all_embeddings, clear_all_pdfs
 
 load_dotenv()
 
