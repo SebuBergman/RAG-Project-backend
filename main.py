@@ -9,7 +9,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 from fastapi.middleware.cors import CORSMiddleware
 # pylint:disable=relative-beyond-top-level
 from create_embeddings import process_pdf, upload_to_s3, delete_all_s3_files
-from database import get_all_embeddings, get_cache_collection, get_pdf_metadata, store_query_result, find_similar_cached_query, clear_cache_entries, insert_pdf_metadata, keyword_search, hybrid_search, clear_all_embeddings, clear_all_pdfs
+from database import get_all_embeddings, get_cache_collection, get_pdf_metadata, store_query_result, find_similar_cached_query, clear_cache_entries, insert_pdf_metadata, keyword_search, hybrid_search, clear_all_embeddings, clear_all_pdfs, vector_search
 
 load_dotenv()
 
@@ -43,20 +43,7 @@ class QueryRequest(BaseModel):
     question: str
     keyword: str
     file_name: str
-
-def main():
-    """Main function to run the FastAPI application with uvicorn server."""
-    
-    uvicorn.run(
-        app,
-        host="0.0.0.0",
-        port=8000,
-        reload=True,  # Enable auto-reload during development
-        log_level="info"
-    )
-    
-if __name__ == "__main__":
-    main()
+    cached: bool
 
 # Root endpoint
 @app.get("/")
@@ -131,7 +118,6 @@ async def query(request: QueryRequest):
         cached_result = find_similar_cached_query(query_embedding)
         if cached_result:
             print(f"Cache hit: Similar query found - {cached_result['query']}")
-
             return {
                 "answer": cached_result["answer"],
                 "results": cached_result["context"],
@@ -140,48 +126,24 @@ async def query(request: QueryRequest):
             }
         print("No similar queries found in cache.")
 
-        # Retrieve all embeddings from MongoDB
-        cursor = get_all_embeddings()
-        documents, embeddings, metadata = [], [], []
-
-        for doc in cursor:
-            documents.extend(doc['sentences'])
-            embeddings.extend(doc['embeddings'])
-            metadata.append({"file_name": doc['file_name'], "file_path": doc['file_path']})
-
-        if not embeddings:
-            raise HTTPException(status_code=404, detail="No embeddings found in the database.")
-
-        # Convert embeddings to NumPy array
-        embeddings = np.array(embeddings)
-
-        # Calculate cosine similarity
-        similarities = cosine_similarity(query_embedding, embeddings).flatten()
-
-        # Get top 5 most similar documents
-        top_indices = similarities.argsort()[-5:][::-1]
-        vector_results = [
-            {
-                "file_name": file_name,
-                "sentences": documents[i],
-                "score": float(similarities[i]),  # Convert numpy float to Python float
-            }
-            for i in top_indices
-        ]
+        # Perform vector serarch using Milvus
+        vector_results = vector_search(query_embedding, limit=7)
+        print(f"Keyword search returned {len(keyword_results)} results")
 
         # Perform keyword search
         keyword_results = keyword_search(user_keyword, file_name, limit=5)
-        print(f"Keyword Results: {keyword_results.length}")
+        print(f"Keyword search returned {len(keyword_results)} results")
 
-        # Combine results (assuming hybrid_search is defined elsewhere)
+        # Combine results using hybrid search
         hybrid_results = hybrid_search(vector_results, keyword_results, alpha=0.7, limit=7)
+        print(f"Hybrid search returned {len(hybrid_results)} results")
 
         # Build context from top hybrid results
         context_lines = []
         for i, doc in enumerate(hybrid_results):
             context_lines.append(
-                f"Document {i+1} (Hybrid Score: {doc["hybrid_score"]:.2f} | "
-                f"Semantic: {doc["vector_score"]:.2f} | Keyword: {doc["keyword_score"]:.2f})\n"
+                f"Document {i+1} (Hybrid Score: {doc['hybrid_score']:.2f} | "
+                f"Semantic: {doc['vector_score']:.2f} | Keyword: {doc['keyword_score']:.2f})\n"
                 f"{doc['sentence']}\n"
             )
         context = "\n".join(context_lines)
@@ -239,7 +201,8 @@ async def query(request: QueryRequest):
         return {
             "answer": answer,
             "results": context,
-            "file_metadata": file_metadata
+            "file_metadata": file_metadata,
+            cached: False
         }
 
     except Exception as e:
@@ -331,3 +294,17 @@ def clear_all_data():
     except Exception as e:
         print(f"Error clearing all data: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to clear all data: {e}")
+    
+def main():
+    """Main function to run the FastAPI application with uvicorn server."""
+    
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=8000,
+        reload=True,  # Enable auto-reload during development
+        log_level="info"
+    )
+    
+if __name__ == "__main__":
+    main()
