@@ -1,9 +1,11 @@
 import os
-from pymongo import MongoClient
-from dotenv import load_dotenv
-import numpy as np
-from sklearn.metrics.pairwise import cosine_similarity
+import time
 import datetime
+import numpy as np
+from pymongo.mongo_client import MongoClient
+from pymongo.server_api import ServerApi
+from dotenv import load_dotenv
+from sklearn.metrics.pairwise import cosine_similarity
 from pymilvus import MilvusClient, DataType
 
 load_dotenv()
@@ -15,83 +17,81 @@ DATA_PATH = os.getenv("DATA_PATH")
 MONGO_URI = os.getenv("MONGO_URI")
 DATABASE_NAME = os.getenv("DATABASE_NAME")
 
+# Create a new client and connect to the server
+client = MongoClient(MONGO_URI, server_api=ServerApi('1'))
+# Send a ping to confirm a successful connection
+try:
+    client.admin.command('ping')
+    print("Pinged your deployment. You successfully connected to MongoDB!")
+except Exception as e:
+    print(e)
+
 # Connect to MongoDB
 mongo_client = MongoClient(MONGO_URI)
 mongo_db = mongo_client[DATABASE_NAME]
 
-# Milvus Lite Configuration
+# Milvus config
 MILVUS_DB_PATH = os.getenv("MILVUS_DB_PATH", "milvus_local.db")
 MILVUS_COLLECTION_NAME = os.getenv("MILVUS_COLLECTION_NAME", "embeddings")
-EMBEDDING_DIM = 384  # Dimension for your embeddings
+EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "3072"))
 
-# Initialize Milvus Lite client (stores in local file)
 milvus_client = MilvusClient(MILVUS_DB_PATH)
+
+uri = "mongodb+srv://sebub:3nhsa8k8hCiprSt3@cluster0.tfygft3.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+client = MongoClient(uri, serverSelectionTimeoutMS=5000)
+
+try:
+    client.server_info()  # forces connection
+    print("MongoDB connection successful")
+except Exception as e:
+    print("MongoDB connection failed:", e)
 
 # Create collections schema
 def create_milvus_collection():
-    """Create Milvus collection with proper schema if it doesn't exist"""
     if MILVUS_COLLECTION_NAME not in milvus_client.list_collections():
-        schema = milvus_client.create_schema(
-            auto_id=True,
-            enable_dynamic_field=True
-        )
-
-        # Add fields
+        schema = milvus_client.create_schema(auto_id=True, enable_dynamic_field=True)
         schema.add_field(field_name="id", datatype=DataType.INT64, is_primary=True, auto_id=True)
         schema.add_field(field_name="embedding", datatype=DataType.FLOAT_VECTOR, dim=EMBEDDING_DIM)
         schema.add_field(field_name="file_name", datatype=DataType.VARCHAR, max_length=512)
         schema.add_field(field_name="sentence", datatype=DataType.VARCHAR, max_length=65535)
 
-        # Create index for vector field
         index_params = milvus_client.prepare_index_params()
-        index_params.add_index(
-            field_name="embedding",
-            index_type="FLAT",
-            metric_type="COSINE"
-        )
+        index_params.add_index(field_name="embedding", index_type="FLAT", metric_type="COSINE")
 
-        milvus_client.create_collection(
-            collection_name=MILVUS_COLLECTION_NAME,
-            schema=schema,
-            index_params=index_params
-        )
+        milvus_client.create_collection(collection_name=MILVUS_COLLECTION_NAME, schema=schema, index_params=index_params)
         print(f"Created Milvus collection: {MILVUS_COLLECTION_NAME}")
     else:
         print(f"Milvus collection already exists: {MILVUS_COLLECTION_NAME}")
 
-# Initialize collection on import
 create_milvus_collection()
 
-# MongoDB Collections
 QUERY_CACHE_COLLECTION = mongo_db[os.getenv("QUERY_CACHE_COLLECTION_NAME", "query_cache")]
-PDFS_COLLECTION = mongo_db[os.getenv("PDFS_COLLECTION_NAME")]
+PDFS_COLLECTION = mongo_db[os.getenv("PDFS_COLLECTION_NAME", "pdfs")]
 
-# Store embeddings in Milvus Lite
 def insert_embeddings(data):
-    """Insert embeddings into Milvus Lite.
-    
-    Args:
-        data: List of dicts with keys: "embedding", "file_name", "sentence"
+    """
+    Insert embeddings into Milvus.
+    data: list of dicts with keys: embedding (list[float]), file_name, sentence
     """
     try:
         if not data:
             print("No data to insert.")
-            return
-        
-        # Prepare data in the correct format
+            return {"inserted": 0}
+        # Validate dims & prepare entities list expected by client
         entities = []
         for d in data:
+            emb = d.get("embedding")
+            if not emb or len(emb) != EMBEDDING_DIM:
+                raise ValueError(f"Embedding dimension mismatch: expected {EMBEDDING_DIM}, got {len(emb) if emb else 'None'}")
             entities.append({
-                "embedding": d["embedding"],
-                "file_name": d["file_name"],
-                "sentence": d["sentence"]
+                "embedding": emb,
+                "file_name": d.get("file_name", ""),
+                "sentence": d.get("sentence", "")
             })
-
-        result = milvus_client.insert(
-            collection_name=MILVUS_COLLECTION_NAME,
-            data=entities
-        )
-        print(f"Inserted {len(entities)} embeddings into Milvus Lite. Insert count: {result['insert_count']}")
+        result = milvus_client.insert(collection_name=MILVUS_COLLECTION_NAME, data=entities)
+        insert_count = result.get("insert_count", len(entities)) if isinstance(result, dict) else len(entities)
+        print(f"Inserted {insert_count} embeddings into Milvus.")
+        return {"inserted": insert_count}
     except Exception as e:
         print(f"Error inserting embeddings into Milvus: {e}")
         raise

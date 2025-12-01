@@ -2,12 +2,12 @@ import os
 import json
 import requests
 from langchain_experimental.text_splitter import SemanticChunker
-from langchain_openai.embeddings import OpenAIEmbeddings
 from llama_index.core import SimpleDirectoryReader
 from dotenv import load_dotenv
 from database import insert_embeddings
 import boto3
 from botocore.exceptions import NoCredentialsError
+from langchain_openai.embeddings import OpenAIEmbeddings
 
 load_dotenv()
 
@@ -18,7 +18,6 @@ HF_TOKEN = os.getenv("HF_TOKEN")
 # Set the environment paths
 DATA_PATH = os.getenv("DATA_PATH", "./data")
 EMBEDDINGS_PATH = os.getenv("EMBEDDINGS_PATH", "./embeddings")
-
 os.makedirs(EMBEDDINGS_PATH, exist_ok=True)
 
 s3_client = boto3.client(
@@ -42,78 +41,95 @@ def upload_to_s3(file_path, bucket_name, s3_key):
         print(f"Error uploading to S3: {e}")
         raise
 
-def query_hf_api(payload):
-    headers = {"Authorization": f"Bearer {HF_TOKEN}"}
-    response = requests.post(HF_API_URL, headers=headers, json=payload, timeout=360)
-    return response.json()
-
 def process_pdf(file_path):
-    """Process PDF file and extract text."""
+    """Process a PDF file, extract text, create embeddings with OpenAI, and insert into Milvus."""
     print(f"Processing PDF file: {file_path}")
     try:
-        # Extract the name of the PDF
         file_name = os.path.basename(file_path)
-        unique_id = os.path.splitext(file_name)[0]  # Use file name (without extension) as unique ID
+        unique_id = os.path.splitext(file_name)[0]
 
-        # Upload the file to S3
+        # Upload PDF to S3
         bucket_name = os.getenv("S3_BUCKET_NAME")
         s3_key = f"pdfs/{file_name}"
         s3_url = upload_to_s3(file_path, bucket_name, s3_key)
-
-        # Log file processing
         print(f"Processing file: {file_name}, S3 Path: {s3_url}")
 
-        # Read PDF files
+        # Read PDF
         reader = SimpleDirectoryReader(input_files=[file_path])
         documents = reader.load_data()
 
-        # Initialize semantic chunker and create chunks
-        text_splitter = SemanticChunker(
-            OpenAIEmbeddings(model="text-embedding-3-large"),
-            breakpoint_threshold_type="percentile",
-            breakpoint_threshold_amount=0.8,
-            )
+        if not documents:
+            print(f"No documents extracted from {file_name}")
+            return
 
-        # Process document and create semantic chunks
-        embeddings = []
+        # Initialize OpenAI embeddings and SemanticChunker
+        embed_model = OpenAIEmbeddings(model="text-embedding-3-large")
+        text_splitter = SemanticChunker(
+            embed_model,
+            breakpoint_threshold_type="percentile",
+            breakpoint_threshold_amount=0.8
+        )
+
+        embeddings_to_insert = []
+
         for doc in documents:
-            # Split document into semantic chunks
+            # Split into semantic chunks
             chunks = text_splitter.create_documents([doc.text])
 
-            # Extract sentences from chunks
-            chunk_sentences = []
+            # Extract clean sentences
+            sentences = []
             for chunk in chunks:
-                chunk_sentences.extend(chunk.page_content.split(". "))
+                for s in chunk.page_content.split(". "):
+                    s = s.strip()
+                    if s:
+                        sentences.append(s)
 
-            # Get embeddings for each sentence
-            payload = {"inputs": chunk_sentences}
-            response = query_hf_api(payload)
+            if not sentences:
+                print(f"No valid sentences extracted for {file_name} document {getattr(doc,'doc_id','')}")
+                continue
 
-            # Log API response
-            if "error" in response:
-                print(f"Error embedding document {doc.doc_id}: {response['error']}")
-            else:
-                embeddings.append({
-                    "unique_id": unique_id,
-                    "file_name": file_name,
-                    "file_path": s3_url,
-                    "sentences": chunk_sentences,
-                    "embeddings": response,
-                    "semantic_chunks": [chunk.page_content for chunk in chunks],
-                })
+            # Create embeddings in batches to avoid very large requests
+            batch_size = 128
+            all_embeddings = []
+            for i in range(0, len(sentences), batch_size):
+                batch = sentences[i:i + batch_size]
+                try:
+                    batch_embeddings = embed_model.embed_documents(batch)
+                    all_embeddings.extend(batch_embeddings)
+                except Exception as e:
+                    print(f"Error generating embeddings for batch: {e}")
+                    continue
 
-        # Save embeddings to a file
+            if len(all_embeddings) != len(sentences):
+                print(f"Warning: embeddings count {len(all_embeddings)} != sentences {len(sentences)} for {file_name}")
+
+            # Prepare data for Milvus
+            for sent, emb in zip(sentences, all_embeddings):
+                try:
+                    embeddings_to_insert.append({
+                        "embedding": [float(x) for x in emb],
+                        "file_name": file_name,
+                        "sentence": sent
+                    })
+                except Exception:
+                    print(f"Skipping sentence due to bad embedding: {sent[:60]}")
+
+        # Save embeddings for backup
+        os.makedirs(EMBEDDINGS_PATH, exist_ok=True)
         output_file = os.path.join(EMBEDDINGS_PATH, f"{unique_id}_embeddings.json")
         with open(output_file, "w") as f:
-            json.dump(embeddings, f, indent=4)
+            json.dump(embeddings_to_insert, f, indent=2)
         print(f"Embeddings saved to {output_file}")
 
-        # Insert embeddings into Milvus
-        try:
-            insert_embeddings(embeddings)
-            print(f"Embeddings for {file_name} inserted into Milvus Lite.")
-        except Exception as e:
-            print(f"Error inserting embeddings into Milvus: {e}")
+        # Insert into Milvus
+        if embeddings_to_insert:
+            try:
+                insert_embeddings(embeddings_to_insert)
+                print(f"Inserted {len(embeddings_to_insert)} embeddings for {file_name}")
+            except Exception as e:
+                print(f"Error inserting embeddings into Milvus: {e}")
+        else:
+            print(f"No embeddings to insert for {file_name}")
 
     except Exception as e:
         print(f"Error processing PDF {file_path}: {e}")
@@ -123,18 +139,22 @@ def delete_all_s3_files():
     """Delete all files in the S3 bucket."""
     try:
         bucket_name = os.getenv("S3_BUCKET_NAME")
+        deleted_count = 0
 
-        # List all objects in the bucket
-        objects = s3_client.list_objects_v2(Bucket=bucket_name)
-        if 'Contents' in objects:
-            keys = [{"Key": obj["Key"]} for obj in objects['Contents']]
-            delete_response = s3_client.delete_objects(
-                Bucket=bucket_name, Delete={"Objects": keys}
-            )
-            return len(keys)
-        else:
-            print("No files found in the S3 bucket.")
-            return 0
+        paginator = s3_client.get_paginator('list_objects_v2')
+        for page in paginator.paginate(Bucket=bucket_name):
+            if "Contents" in page:
+                keys = [{"Key": obj["Key"]} for obj in page["Contents"]]
+                if keys:
+                    response = s3_client.delete_objects(
+                        Bucket=bucket_name,
+                        Delete={"Objects": keys}
+                    )
+                    deleted_count += len(keys)
+                    print(f"Deleted {len(keys)} objects from S3")
+        print(f"Total deleted files: {deleted_count}")
+        return deleted_count
+
     except Exception as e:
         print(f"Error deleting files from S3: {e}")
         raise

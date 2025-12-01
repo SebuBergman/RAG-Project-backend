@@ -15,3 +15,6 @@ embeddings
 
 __pycache__
 __pycache__/
+
+.milvus_local.db.lock
+milvus_local.db

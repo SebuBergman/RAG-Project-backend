@@ -1,15 +1,32 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File
-from pydantic import BaseModel
 import os
+import json
 import requests
 import numpy as np
-from openai import OpenAI
+from fastapi import FastAPI, HTTPException, UploadFile, File
+from pydantic import BaseModel
 from dotenv import load_dotenv
-from sklearn.metrics.pairwise import cosine_similarity
 from fastapi.middleware.cors import CORSMiddleware
-# pylint:disable=relative-beyond-top-level
+from openai import OpenAI
+import uvicorn
+from langchain_openai.embeddings import OpenAIEmbeddings
+
+
+# your modules
 from create_embeddings import process_pdf, upload_to_s3, delete_all_s3_files
-from database import get_all_embeddings, get_cache_collection, get_pdf_metadata, store_query_result, find_similar_cached_query, clear_cache_entries, insert_pdf_metadata, keyword_search, hybrid_search, clear_all_embeddings, clear_all_pdfs, vector_search
+from database import (
+    get_cache_collection,
+    get_pdf_metadata,
+    store_query_result,
+    find_similar_cached_query,
+    clear_cache_entries,
+    insert_pdf_metadata,
+    keyword_search_local,
+    hybrid_search,
+    clear_all_embeddings,
+    clear_all_pdfs,
+    vector_search,
+    get_cache_stats as db_get_cache_stats  # avoid name collision
+)
 
 load_dotenv()
 
@@ -43,7 +60,7 @@ class QueryRequest(BaseModel):
     question: str
     keyword: str
     file_name: str
-    cached: bool
+    cached: bool = False # default to False
 
 # Root endpoint
 @app.get("/")
@@ -95,23 +112,19 @@ def get_pdfs():
 
 @app.post("/query")
 async def query(request: QueryRequest):
-    """Answer a question using both vector and keyword search."""
+    """Answer a question using both vector and keyword search using OpenAI embeddings."""
     try:
         print(f"Received query: {request.question}, Keyword: {request.keyword}, File: {request.file_name}")
         user_query = request.question
         user_keyword = request.keyword
         file_name = request.file_name
 
-        # Generate the embedding for the user query using Hugging Face API
-        payload = {"inputs": [user_query]}
-        response = requests.post(
-            os.getenv("HF_API_URL"),
-            headers={"Authorization": f"Bearer {os.getenv('HF_TOKEN')}"},
-            json=payload,
-        )
-        if response.status_code != 200:
-            raise HTTPException(status_code=response.status_code, detail="Error querying Hugging Face API")
-        query_embedding = np.array(response.json()).reshape(1, -1)
+        # --- Generate query embedding using OpenAI ---
+        embed_model = OpenAIEmbeddings(model="text-embedding-3-large")
+        try:
+            query_embedding = embed_model.embed_query(user_query).reshape(1, -1)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"OpenAI embedding error: {e}")
 
         # Check cache first
         print("Checking cache for similar queries...")
@@ -126,12 +139,12 @@ async def query(request: QueryRequest):
             }
         print("No similar queries found in cache.")
 
-        # Perform vector serarch using Milvus
+        # Perform vector search using Milvus
         vector_results = vector_search(query_embedding, limit=7)
-        print(f"Keyword search returned {len(keyword_results)} results")
+        print(f"Vector search returned {len(vector_results)} results")
 
         # Perform keyword search
-        keyword_results = keyword_search(user_keyword, file_name, limit=5)
+        keyword_results = keyword_search_local(user_keyword, file_name, limit=5)
         print(f"Keyword search returned {len(keyword_results)} results")
 
         # Combine results using hybrid search
@@ -148,7 +161,7 @@ async def query(request: QueryRequest):
             )
         context = "\n".join(context_lines)
 
-        # Improved system prompt
+        # System prompt
         system_prompt = f"""
         Answer the question based only on the following context:
         
@@ -173,7 +186,7 @@ async def query(request: QueryRequest):
                 {}
             )
 
-        # Get OpenAI response
+        # Get OpenAI completion
         try:
             openai_response = openai_client.chat.completions.create(
                 model="gpt-4o-mini",
@@ -202,18 +215,21 @@ async def query(request: QueryRequest):
             "answer": answer,
             "results": context,
             "file_metadata": file_metadata,
-            cached: False
+            "cached": False
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Error in query endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
     
 @app.get("/cache/stats")
-def get_cache_stats():
-    """Get statistics about the cache."""
+def cache_stats_endpoint():
+    """Endpoint to return cache stats."""
     try:
-        stats = get_cache_stats()
+        stats = db_get_cache_stats()
         if "error" in stats:
             raise HTTPException(status_code=500, detail=stats["error"])
         return stats
