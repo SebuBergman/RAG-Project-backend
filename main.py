@@ -31,6 +31,8 @@ from rag_search import (
     keyword_search,
     hybrid_search,
 )
+from vectorstore_manager import get_vectorstore, embeddings, COLLECTION_NAME, MILVUS_CONNECTION, vectorstore
+import vectorstore_manager as vsm
 
 load_dotenv()
 
@@ -50,13 +52,7 @@ app.add_middleware(
 UPLOAD_PATH = "./data"
 os.makedirs(UPLOAD_PATH, exist_ok=True)
 
-MILVUS_CONNECTION = {
-    "uri": os.getenv("MILVUS_DB_PATH", "milvus_local.db"),
-}
-COLLECTION_NAME = os.getenv("MILVUS_COLLECTION_NAME", "embeddings")
-
 # Initialize LangChain components
-embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
 llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.3)
 
 # S3 client
@@ -72,23 +68,6 @@ text_splitter = RecursiveCharacterTextSplitter(
     chunk_size=1000,
     chunk_overlap=200,
 )
-
-# Global vectorstore reference
-vectorstore = None
-
-def get_vectorstore():
-    """Get or create vectorstore instance"""
-    global vectorstore
-    if vectorstore is None:
-        try:
-            vectorstore = Milvus(
-                embedding_function=embeddings,
-                collection_name=COLLECTION_NAME,
-                connection_args=MILVUS_CONNECTION,
-            )
-        except Exception as e:
-            print(f"Error initializing vectorstore: {e}")
-    return vectorstore
 
 # Model for query input
 class QueryRequest(BaseModel):

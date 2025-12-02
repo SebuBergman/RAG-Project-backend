@@ -1,5 +1,5 @@
 from typing import List, Dict
-from main import get_vectorstore
+from vectorstore_manager import get_vectorstore
 
 def keyword_search(query: str, file_name: str = None, limit: int = 7) -> List[Dict]:
     """Perform keyword search on documents"""

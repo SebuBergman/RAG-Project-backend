@@ -58,7 +58,6 @@ def create_milvus_collection():
         index_params.add_index(field_name="embedding", index_type="FLAT", metric_type="COSINE")
 
         milvus_client.create_collection(collection_name=MILVUS_COLLECTION_NAME, schema=schema, index_params=index_params)
-        print(f"Created Milvus collection: {MILVUS_COLLECTION_NAME}")
     else:
         print(f"Milvus collection already exists: {MILVUS_COLLECTION_NAME}")
 
