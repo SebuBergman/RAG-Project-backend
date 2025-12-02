@@ -25,7 +25,7 @@ from db import (
     clear_all_embeddings,
     clear_all_pdfs,
 )
-from embeddings import upload_to_s3, delete_all_s3_files
+from S3_bucket import upload_to_s3, delete_all_s3_files
 from rag_search import (
     vector_search,
     keyword_search,
