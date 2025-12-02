@@ -37,7 +37,7 @@ EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "3072"))
 
 milvus_client = MilvusClient(MILVUS_DB_PATH)
 
-uri = "mongodb+srv://sebub:3nhsa8k8hCiprSt3@cluster0.tfygft3.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+uri = os.getenv("MONGO_URI")
 client = MongoClient(uri, serverSelectionTimeoutMS=5000)
 
 try:
