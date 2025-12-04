@@ -1,5 +1,7 @@
+import datetime
 import os
 from typing import List, Dict
+from pymilvus import MilvusClient
 import uvicorn
 import boto3
 from fastapi import FastAPI, HTTPException, UploadFile, File
@@ -15,7 +17,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 # your modules
 from db import (
-    get_cache_collection,
+    QUERY_CACHE_COLLECTION,
     get_pdf_metadata,
     insert_pdf_metadata,
     clear_cache_entries,
@@ -61,6 +63,16 @@ os.makedirs(UPLOAD_PATH, exist_ok=True)
 
 # Initialize LangChain components
 llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.3)
+
+# Zilliz Cloud / Milvus config
+ZILLIZ_CLOUD_URI = os.getenv("ZILLIZ_CLOUD_URI")
+ZILLIZ_CLOUD_TOKEN = os.getenv("ZILLIZ_CLOUD_TOKEN")
+
+# Initialize Milvus client for Zilliz Cloud
+milvus_client = MilvusClient(
+    uri=ZILLIZ_CLOUD_URI,
+    token=ZILLIZ_CLOUD_TOKEN
+)
 
 # S3 client
 s3_client = boto3.client(
@@ -164,12 +176,8 @@ async def upload_pdf(file: UploadFile = File(...)):
         print(f"Adding {len(splits)} documents to vectorstore...")
         vs.add_documents(splits)
         
-        # Store PDF metadata in MongoDB
-        insert_pdf_metadata({
-            "file_name": file.filename,
-            "file_path": s3_url,
-            "chunks_count": len(splits)
-        })
+        # Store PDF metadata in Milvus
+        insert_pdf_metadata(file.filename, s3_url)
         
         # Clean up local file
         os.remove(file_path)
@@ -196,7 +204,7 @@ def get_pdfs():
 
 @app.post("/query")
 async def query(request: QueryRequest):
-    """Query the RAG system with custom MongoDB caching"""
+    """Query the RAG system with custom Milvus caching"""
     try:
         print(f"Query: {request.question}, Keyword: {request.keyword}, File: {request.file_name}, Cached: {request.cached}")
         
@@ -283,14 +291,14 @@ async def query(request: QueryRequest):
         
         # Create prompt
         prompt = f"""Use the following context to answer the question.
-If you don't know the answer, say so. Be concise and factual.
+        If you don't know the answer, say so. Be concise and factual.
 
-Context:
-{context}
+        Context:
+        {context}
 
-Question: {request.question}
+        Question: {request.question}
 
-Answer:"""
+        Answer:"""
         
         # Get answer from LLM
         response = llm.invoke(prompt)
@@ -371,23 +379,28 @@ def clear_whole_cache():
 
 @app.get("/cache/entries")
 def list_cache_entries(limit: int = 10):
-    """List recent cache entries with their answers."""
+    """List recent cached queries from Milvus."""
     try:
-        collection = get_cache_collection()
-        entries = list(collection.find(
-            {},
-            {"_id": 0, "query": 1, "answer": 1, "timestamp": 1}
-        ).sort("timestamp", -1).limit(limit))
-        
-        # Format timestamps for readability
-        for entry in entries:
-            if "timestamp" in entry:
-                entry["timestamp"] = entry["timestamp"].isoformat()
-        
-        return {"entries": entries, "count": len(entries)}
+        results = milvus_client.query(
+            collection_name=QUERY_CACHE_COLLECTION,
+            filter="pk >= 0",
+            output_fields=["query", "answer", "timestamp"],
+            limit=limit
+        )
+
+        # Sort descending by timestamp
+        results = sorted(results, key=lambda x: x["timestamp"], reverse=True)
+
+        # Format timestamps
+        for r in results:
+            r["timestamp"] = datetime.datetime.fromtimestamp(r["timestamp"]).isoformat()
+
+        return {"entries": results, "count": len(results)}
+
     except Exception as e:
-        print(f"Error listing cache entries: {str(e)}")
+        print(f"Error listing cache entries: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
     
 @app.post("/clear_all")
 async def clear_all():
@@ -399,11 +412,14 @@ async def clear_all():
         # Reset vectorstore connection
         reset_vectorstore()
         
-        # Clear PDF metadata from MongoDB
+        # Clear PDF metadata from Milvus
         pdfs_deleted = clear_all_pdfs()
         
         # Clear S3 files
         s3_deleted = delete_all_s3_files()
+
+        # Clear query cache
+        clear_cache_entries()
         
         return {
             "status": "success",

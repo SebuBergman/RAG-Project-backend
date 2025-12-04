@@ -1,32 +1,35 @@
 from typing import List, Dict
 from vectorstore_manager import get_vectorstore
+from db import milvus_client, MILVUS_COLLECTION_NAME
+
+def _collection_has_field(field_name: str) -> bool:
+    try:
+        if MILVUS_COLLECTION_NAME not in milvus_client.list_collections():
+            return False
+        schema_info = milvus_client.describe_collection(MILVUS_COLLECTION_NAME)
+        fields = [f.get("name") for f in schema_info.get("fields", [])]
+        return field_name in fields
+    except Exception as e:
+        print(f"Could not inspect collection schema: {e}")
+        # Be conservative: return False so we fallback to client filtering
+        return False
 
 def keyword_search(query: str, file_name: str = None, limit: int = 7) -> List[Dict]:
-    """Perform keyword search on documents"""
+    """Perform keyword search on documents; fallback to client-side filtering if needed."""
     try:
         vs = get_vectorstore()
-
-        print("Collection:", vs.col.name)
-        print("Schema:", vs.col.schema)
-        print("Entities:", vs.col.num_entities)
-        test = vs.similarity_search_with_score("test search", k=3)
-        print("Test search:", test)
-
         if vs is None:
             return []
-        
-        # Get all documents (or filtered by file_name)
-        all_docs = vs.similarity_search(
-            query="",
-            k=1000,
-        )
-        
-        # Filter by keyword match
+
+        # If file_name field exists server-side, we could in principle use expr filtering in the vectorstore query,
+        # but keyword search here does a simple content substring scan (LangChain returns metadata)
+        # We'll get a reasonably large k then filter:
+        docs = vs.similarity_search(query="", k=1000)
         query_lower = query.lower()
         results = []
-        
-        for doc in all_docs:
+        for doc in docs:
             if query_lower in doc.page_content.lower():
+                # If file_name not present in doc.metadata, default to empty string
                 results.append({
                     "content": doc.page_content,
                     "file_name": doc.metadata.get("file_name", ""),
@@ -35,42 +38,51 @@ def keyword_search(query: str, file_name: str = None, limit: int = 7) -> List[Di
                 })
                 if len(results) >= limit:
                     break
-        
         print(f"Keyword search found {len(results)} results")
         return results
-    
     except Exception as e:
         print(f"Error in keyword search: {e}")
         return []
 
 def vector_search(query: str, file_name: str = None, limit: int = 7) -> List[Dict]:
-    """Perform semantic vector search"""
+    """Perform semantic vector search. If file_name is provided and exists in the collection schema,
+       use server-side expr filter for efficiency. Otherwise fallback to client-side filtering."""
     try:
         vs = get_vectorstore()
         if vs is None:
             return []
-        
+
         search_kwargs = {"k": limit}
+        server_side_filter = False
         if file_name:
-            search_kwargs["expr"] = f'file_name == "{file_name}"'
-        
-        docs = vs.similarity_search_with_score(query, **search_kwargs)
-        results = vs.similarity_search_with_score("hello world", k=5)
-        print(results)
-        
+            if _collection_has_field("file_name"):
+                server_side_filter = True
+                # Milvus expr expects quotes around strings; escape if needed
+                safe_name = file_name.replace('"', '\\"')
+                search_kwargs["expr"] = f'file_name == "{safe_name}"'
+            else:
+                print("Server-side 'file_name' field not present — will filter client-side instead.")
+
+        docs_with_scores = vs.similarity_search_with_score(query, **search_kwargs)
+
+        # If server-side filtering wasn't possible but file_name was requested, we still need to filter results
         results = []
-        for doc, score in docs:
+        for doc, score in docs_with_scores:
+            meta_file = doc.metadata.get("file_name", "")
+            if file_name and not server_side_filter:
+                # Skip entries that don't match requested file_name
+                if meta_file != file_name:
+                    continue
             results.append({
                 "content": doc.page_content,
-                "file_name": doc.metadata.get("file_name", ""),
+                "file_name": meta_file,
                 "score": float(score),
                 "search_type": "vector"
             })
-        
-        print(f"Results content preview: {results}")
-        print(f"Vector search found {len(results)} results")
+
+        print(f"Vector search found {len(results)} results (server_filter={server_side_filter})")
         return results
-    
+
     except Exception as e:
         print(f"Error in vector search: {e}")
         return []
