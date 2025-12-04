@@ -48,7 +48,7 @@ Structured and ready for integration with any front-end via HTTP requests.
 This project uses python venv
 
 ```bash
- python -m venv rag_project
+  uv venv --python=3.11 .venv
 ```
 
 ### :running: Run Locally

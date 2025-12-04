@@ -5,6 +5,13 @@ def keyword_search(query: str, file_name: str = None, limit: int = 7) -> List[Di
     """Perform keyword search on documents"""
     try:
         vs = get_vectorstore()
+
+        print("Collection:", vs.col.name)
+        print("Schema:", vs.col.schema)
+        print("Entities:", vs.col.num_entities)
+        test = vs.similarity_search_with_score("test search", k=3)
+        print("Test search:", test)
+
         if vs is None:
             return []
         
@@ -12,7 +19,6 @@ def keyword_search(query: str, file_name: str = None, limit: int = 7) -> List[Di
         all_docs = vs.similarity_search(
             query="",
             k=1000,
-            expr=f'file_name == "{file_name}"' if file_name else None
         )
         
         # Filter by keyword match
@@ -49,6 +55,8 @@ def vector_search(query: str, file_name: str = None, limit: int = 7) -> List[Dic
             search_kwargs["expr"] = f'file_name == "{file_name}"'
         
         docs = vs.similarity_search_with_score(query, **search_kwargs)
+        results = vs.similarity_search_with_score("hello world", k=5)
+        print(results)
         
         results = []
         for doc, score in docs:
@@ -59,6 +67,7 @@ def vector_search(query: str, file_name: str = None, limit: int = 7) -> List[Dic
                 "search_type": "vector"
             })
         
+        print(f"Results content preview: {results}")
         print(f"Vector search found {len(results)} results")
         return results
     

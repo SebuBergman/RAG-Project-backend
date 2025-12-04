@@ -6,7 +6,7 @@ from pymongo.mongo_client import MongoClient
 from pymongo.server_api import ServerApi
 from dotenv import load_dotenv
 from sklearn.metrics.pairwise import cosine_similarity
-from pymilvus import MilvusClient, DataType
+from pymilvus import MilvusClient, DataType, Collection, utility, connections
 
 load_dotenv()
 
@@ -30,12 +30,25 @@ except Exception as e:
 mongo_client = MongoClient(MONGO_URI)
 mongo_db = mongo_client[DATABASE_NAME]
 
-# Milvus config
-MILVUS_DB_PATH = os.getenv("MILVUS_DB_PATH", "milvus_local.db")
+# Zilliz Cloud / Milvus config
+ZILLIZ_CLOUD_URI = os.getenv("ZILLIZ_CLOUD_URI")
+ZILLIZ_CLOUD_TOKEN = os.getenv("ZILLIZ_CLOUD_TOKEN")
 MILVUS_COLLECTION_NAME = os.getenv("MILVUS_COLLECTION_NAME", "embeddings")
 EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "1536"))
 
-milvus_client = MilvusClient(MILVUS_DB_PATH)
+# Initialize Milvus client for Zilliz Cloud
+milvus_client = MilvusClient(
+    uri=ZILLIZ_CLOUD_URI,
+    token=ZILLIZ_CLOUD_TOKEN
+)
+
+# Test connection
+try:
+    collections = milvus_client.list_collections()
+    print(f"✓ Zilliz Cloud connection successful. Collections: {collections}")
+except Exception as e:
+    print(f"✗ Zilliz Cloud connection failed: {e}")
+    raise
 
 client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
 
@@ -47,19 +60,103 @@ except Exception as e:
 
 # Create collections schema
 def create_milvus_collection():
-    if MILVUS_COLLECTION_NAME not in milvus_client.list_collections():
-        schema = milvus_client.create_schema(auto_id=True, enable_dynamic_field=True)
-        schema.add_field(field_name="id", datatype=DataType.INT64, is_primary=True, auto_id=True)
-        schema.add_field(field_name="embedding", datatype=DataType.FLOAT_VECTOR, dim=EMBEDDING_DIM)
-        schema.add_field(field_name="file_name", datatype=DataType.VARCHAR, max_length=512)
-        schema.add_field(field_name="sentence", datatype=DataType.VARCHAR, max_length=65535)
-
+    """Create Milvus collection with proper schema for Zilliz Cloud.
+    
+    IMPORTANT: This creates a collection compatible with LangChain's Milvus vectorstore.
+    LangChain expects specific field names: 'vector', 'text', 'pk'
+    """
+    try:
+        if MILVUS_COLLECTION_NAME in milvus_client.list_collections():
+            print(f"Milvus collection already exists: {MILVUS_COLLECTION_NAME}")
+            
+            # Verify the schema is correct
+            try:
+                collection_info = milvus_client.describe_collection(MILVUS_COLLECTION_NAME)
+                print(f"Existing collection schema: {collection_info}")
+                
+                # Check if the required fields exist
+                has_correct_schema = any(
+                    field['name'] in ['pk', 'vector', 'text'] 
+                    for field in collection_info.get('fields', [])
+                )
+                
+                if not has_correct_schema:
+                    print("⚠️  WARNING: Collection exists but schema appears incorrect!")
+                    print("   Expected fields: pk, vector, text")
+                    print("   Consider running /clear_all to recreate with correct schema")
+                    
+            except Exception as e:
+                print(f"Could not verify collection schema: {e}")
+            
+            return
+        
+        print(f"Creating new collection: {MILVUS_COLLECTION_NAME}")
+        
+        # Define schema compatible with LangChain
+        # Note: For Zilliz Cloud, we use enable_dynamic_field but WITHOUT auto-indexing dynamic fields
+        schema = milvus_client.create_schema(
+            auto_id=True,
+            enable_dynamic_field=True,  # Allows additional metadata fields
+            description="RAG document embeddings collection"
+        )
+        
+        # Primary key field (LangChain uses 'pk')
+        schema.add_field(
+            field_name="pk",
+            datatype=DataType.INT64,
+            is_primary=True,
+            auto_id=True,
+            description="Primary key"
+        )
+        
+        # Vector field (LangChain uses 'vector')
+        schema.add_field(
+            field_name="vector",
+            datatype=DataType.FLOAT_VECTOR,
+            dim=EMBEDDING_DIM,
+            description="Document embedding vector"
+        )
+        
+        # Text field (LangChain uses 'text')
+        schema.add_field(
+            field_name="text",
+            datatype=DataType.VARCHAR,
+            max_length=65535,
+            description="Document text content"
+        )
+        
+        # Prepare index parameters - ONLY index the vector field
         index_params = milvus_client.prepare_index_params()
-        index_params.add_index(field_name="embedding", index_type="FLAT", metric_type="COSINE")
-
-        milvus_client.create_collection(collection_name=MILVUS_COLLECTION_NAME, schema=schema, index_params=index_params)
-    else:
-        print(f"Milvus collection already exists: {MILVUS_COLLECTION_NAME}")
+        
+        # Only create index on vector field to avoid JSON index issues
+        index_params.add_index(
+            field_name="vector",
+            index_type="AUTOINDEX",
+            metric_type="COSINE"
+        )
+        
+        # Create collection with schema and index
+        milvus_client.create_collection(
+            collection_name=MILVUS_COLLECTION_NAME,
+            schema=schema,
+            index_params=index_params,
+            consistency_level="Strong"
+        )
+        
+        print(f"✓ Collection '{MILVUS_COLLECTION_NAME}' created successfully")
+        print(f"  Schema: pk (INT64), vector (FLOAT_VECTOR[{EMBEDDING_DIM}]), text (VARCHAR)")
+        print(f"  Dynamic fields enabled for metadata (file_name, source, etc.)")
+        
+        # Load collection
+        try:
+            milvus_client.load_collection(MILVUS_COLLECTION_NAME)
+            print(f"✓ Collection '{MILVUS_COLLECTION_NAME}' loaded and ready")
+        except Exception as load_error:
+            print(f"Collection load note: {load_error}")
+        
+    except Exception as e:
+        print(f"Error creating Milvus collection: {str(e)}")
+        raise
 
 create_milvus_collection()
 
@@ -234,8 +331,13 @@ def get_cache_stats():
 def clear_all_embeddings():
     """Clear all embeddings from Milvus."""
     try:
-        milvus_client.drop_collection(MILVUS_COLLECTION_NAME)
-        print(f"Dropped Milvus collection successfully.")
+        # Check if collection exists before dropping
+        if MILVUS_COLLECTION_NAME in milvus_client.list_collections():
+            milvus_client.drop_collection(MILVUS_COLLECTION_NAME)
+            print(f"✓ Dropped Milvus collection '{MILVUS_COLLECTION_NAME}' successfully.")
+        else:
+            print(f"Collection '{MILVUS_COLLECTION_NAME}' does not exist.")
+        
         # Recreate the collection
         create_milvus_collection()
         return True
@@ -252,3 +354,15 @@ def clear_all_pdfs():
     except Exception as e:
         print(f"Error clearing PDF metadata: {e}")
         raise
+
+def get_milvus_collection_stats():
+    """Get statistics about the Milvus collection"""
+    try:
+        stats = milvus_client.get_collection_stats(MILVUS_COLLECTION_NAME)
+        return {
+            "collection_name": MILVUS_COLLECTION_NAME,
+            "stats": stats
+        }
+    except Exception as e:
+        print(f"Error getting Milvus stats: {str(e)}")
+        return {"error": str(e)}

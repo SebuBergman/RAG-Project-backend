@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
-# langchain importss
+# langchain imports
 from langchain_community.vectorstores import Milvus
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain_community.document_loaders import PyPDFLoader
@@ -24,6 +24,7 @@ from db import (
     find_similar_cached_query,
     clear_all_embeddings,
     clear_all_pdfs,
+    get_milvus_collection_stats,
 )
 from S3_bucket import upload_to_s3, delete_all_s3_files
 from rag_search import (
@@ -31,8 +32,14 @@ from rag_search import (
     keyword_search,
     hybrid_search,
 )
-from vectorstore_manager import get_vectorstore, embeddings, COLLECTION_NAME, MILVUS_CONNECTION, vectorstore
-import vectorstore_manager as vsm
+from vectorstore_manager import (
+    get_vectorstore, 
+    embeddings, 
+    COLLECTION_NAME, 
+    MILVUS_CONNECTION, 
+    vectorstore,
+    reset_vectorstore
+)
 
 load_dotenv()
 
@@ -72,14 +79,40 @@ text_splitter = RecursiveCharacterTextSplitter(
 # Model for query input
 class QueryRequest(BaseModel):
     question: str
-    keyword: str
-    file_name: str
-    cached: bool = False # default to False
+    keyword: str = ""  # Make optional with default
+    file_name: str = ""  # Make optional with default
+    cached: bool = False  # default to False
+    alpha: float = 0.7  # Add alpha parameter for hybrid search
 
 # Root endpoint
 @app.get("/")
 def read_root():
-    return {"message": "Welcome to the Hybrid RAG API (Vector + Keyword Search)"}
+    return {
+        "message": "Welcome to the Hybrid RAG API (Vector + Keyword Search)",
+        "status": "running",
+        "backend": "Zilliz Cloud"
+    }
+
+@app.get("/health")
+def health_check():
+    """Health check endpoint to verify connections"""
+    try:
+        vs = get_vectorstore()
+        milvus_status = "connected" if vs is not None else "disconnected"
+        
+        stats = get_milvus_collection_stats()
+        
+        return {
+            "status": "healthy",
+            "milvus": milvus_status,
+            "collection": COLLECTION_NAME,
+            "stats": stats
+        }
+    except Exception as e:
+        return {
+            "status": "unhealthy",
+            "error": str(e)
+        }
 
 @app.post("/upload")
 async def upload_pdf(file: UploadFile = File(...)):
@@ -107,17 +140,29 @@ async def upload_pdf(file: UploadFile = File(...)):
         # Split documents
         splits = text_splitter.split_documents(documents)
         
-        # Add to vectorstore
-        global vectorstore
-        if vectorstore is None:
-            vectorstore = Milvus.from_documents(
-                documents=splits,
-                embedding=embeddings,
+        # Get or initialize vectorstore
+        vs = get_vectorstore()
+        
+        if vs is None:
+            # Initialize vectorstore by connecting to existing collection
+            print("Initializing vectorstore connection...")
+            import vectorstore_manager
+            
+            # Connect to the existing collection (don't use from_documents on first run)
+            vs = Milvus(
+                embedding_function=embeddings,
                 collection_name=COLLECTION_NAME,
                 connection_args=MILVUS_CONNECTION,
+                consistency_level="Strong",
+                drop_old=False,
+                auto_id=True,
             )
-        else:
-            vectorstore.add_documents(splits)
+            vectorstore_manager.vectorstore = vs
+            print("✓ Vectorstore connected to existing collection")
+        
+        # Add documents to vectorstore
+        print(f"Adding {len(splits)} documents to vectorstore...")
+        vs.add_documents(splits)
         
         # Store PDF metadata in MongoDB
         insert_pdf_metadata({
@@ -132,7 +177,8 @@ async def upload_pdf(file: UploadFile = File(...)):
         return {
             "message": f"Successfully processed {file.filename}",
             "s3_url": s3_url,
-            "chunks_created": len(splits)
+            "chunks_created": len(splits),
+            "collection": COLLECTION_NAME
         }
     
     except Exception as e:
@@ -158,7 +204,7 @@ async def query(request: QueryRequest):
         if vs is None:
             raise HTTPException(
                 status_code=400,
-                detail="No documents have been uploaded yet"
+                detail="No documents have been uploaded yet. Please upload a PDF first."
             )
         
         # Check cache if enabled
@@ -189,7 +235,7 @@ async def query(request: QueryRequest):
         # Perform vector search
         vector_results = vector_search(
             query=request.question,
-            file_name=request.file_name,
+            file_name=request.file_name if request.file_name else None,
             limit=7
         )
         
@@ -198,7 +244,7 @@ async def query(request: QueryRequest):
         if request.keyword:
             keyword_results = keyword_search(
                 query=request.keyword,
-                file_name=request.file_name,
+                file_name=request.file_name if request.file_name else None,
                 limit=5
             )
         
@@ -347,11 +393,11 @@ def list_cache_entries(limit: int = 10):
 async def clear_all():
     """Clear all data (embeddings, PDFs, and S3)"""
     try:
-        global vectorstore
-        
         # Clear Milvus embeddings
         embeddings_cleared = clear_all_embeddings()
-        vectorstore = None
+        
+        # Reset vectorstore connection
+        reset_vectorstore()
         
         # Clear PDF metadata from MongoDB
         pdfs_deleted = clear_all_pdfs()
@@ -369,6 +415,47 @@ async def clear_all():
     
     except Exception as e:
         print(f"Error clearing data: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/milvus/stats")
+def milvus_stats():
+    """Get Milvus/Zilliz collection statistics"""
+    try:
+        stats = get_milvus_collection_stats()
+        return stats
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/milvus/schema")
+def get_collection_schema():
+    """Get the current collection schema to verify it's correct"""
+    try:
+        from db import milvus_client, MILVUS_COLLECTION_NAME
+        
+        if MILVUS_COLLECTION_NAME not in milvus_client.list_collections():
+            return {
+                "error": f"Collection '{MILVUS_COLLECTION_NAME}' does not exist",
+                "collections": milvus_client.list_collections()
+            }
+        
+        schema_info = milvus_client.describe_collection(MILVUS_COLLECTION_NAME)
+        
+        # Extract field names for easy checking
+        fields = schema_info.get('fields', [])
+        field_names = [f.get('name') for f in fields]
+        
+        has_correct_schema = all(name in field_names for name in ['pk', 'vector', 'text'])
+        
+        return {
+            "collection": MILVUS_COLLECTION_NAME,
+            "schema": schema_info,
+            "field_names": field_names,
+            "has_correct_schema": has_correct_schema,
+            "expected_fields": ["pk", "vector", "text"],
+            "recommendation": "Schema looks good!" if has_correct_schema else 
+                            "⚠️ Schema incorrect! Run POST /clear_all to recreate"
+        }
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     
 def main():
