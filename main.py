@@ -1,6 +1,5 @@
 import datetime
 import os
-from typing import List, Dict
 from pymilvus import MilvusClient
 import uvicorn
 import boto3
@@ -11,7 +10,7 @@ from dotenv import load_dotenv
 
 # langchain imports
 from langchain_community.vectorstores import Milvus
-from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+from langchain_openai import ChatOpenAI
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
@@ -479,7 +478,7 @@ def main():
     uvicorn.run(
         app,
         host="0.0.0.0",
-        port=8000,
+        port=8001,
         reload=True,
         log_level="info"
     )
