@@ -6,17 +6,14 @@ from pymilvus import MilvusClient, DataType
 
 load_dotenv()
 
-# Set the environment paths
-DATA_PATH = os.getenv("DATA_PATH")
-
 # Zilliz Cloud / Milvus config
 ZILLIZ_CLOUD_URI = os.getenv("ZILLIZ_CLOUD_URI")
 ZILLIZ_CLOUD_TOKEN = os.getenv("ZILLIZ_CLOUD_TOKEN")
 
 # Milvus collection names
-MILVUS_COLLECTION_NAME = os.getenv("MILVUS_COLLECTION_NAME", "embeddings")
-PDF_COLLECTION = "pdf_metadata"
-QUERY_CACHE_COLLECTION = "query_cache"
+MILVUS_COLLECTION_NAME = os.getenv("EMBEDDINGS_COLLECTION_NAME", "embeddings")
+PDF_COLLECTION = os.getenv("PDFS_COLLECTION_NAME", "pdf_metadata")
+QUERY_CACHE_COLLECTION = os.getenv("QUERY_CACHE_COLLECTION_NAME", "query_cache")
 
 # Embedding dimension
 EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "1536"))

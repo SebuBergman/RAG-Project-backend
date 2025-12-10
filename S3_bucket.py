@@ -5,15 +5,6 @@ from botocore.exceptions import NoCredentialsError
 
 load_dotenv()
 
-# Hugging Face API Configuration
-HF_API_URL = os.getenv("HF_API_URL")
-HF_TOKEN = os.getenv("HF_TOKEN")
-
-# Set the environment paths
-DATA_PATH = os.getenv("DATA_PATH", "./data")
-EMBEDDINGS_PATH = os.getenv("EMBEDDINGS_PATH", "./embeddings")
-os.makedirs(EMBEDDINGS_PATH, exist_ok=True)
-
 s3_client = boto3.client(
     "s3",
     aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
